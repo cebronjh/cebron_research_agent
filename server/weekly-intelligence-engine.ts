@@ -2,7 +2,6 @@ import Anthropic from "@anthropic-ai/sdk";
 import { db } from "../drizzle/schema";
 import * as schema from "../drizzle/schema";
 import { eq } from "drizzle-orm";
-import { ApolloEnrichment } from "./apollo-enrichment";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -361,7 +360,67 @@ Return ONLY valid JSON with this exact structure:
       }
     }
 
-    return Array.from(unique.values());
+    const rawCompanies = Array.from(unique.values());
+
+    // Use Claude to extract real company names from page titles/URLs/text
+    return await this.extractCompanyNames(rawCompanies);
+  }
+
+  private async extractCompanyNames(companies: DiscoveredCompany[]): Promise<DiscoveredCompany[]> {
+    if (companies.length === 0) return [];
+
+    const companyList = companies
+      .map((c, i) => `${i + 1}. Page title: "${c.title}"\n   URL: ${c.url}\n   Text snippet: "${c.text.substring(0, 150)}"`)
+      .join('\n');
+
+    const prompt = `Extract the actual company name from each search result below. The page titles are often article headlines or taglines, NOT the company name.
+
+Look at the URL domain, the text content, and the page title to determine the real company name.
+
+Examples of what I mean:
+- Page title "Celebrating 15 years of Think Company" → company name is "Think Company"
+- Page title "Redefining Consulting" on URL thoughtlogic.com → company name is "ThoughtLogic"
+- Page title "Adam Boitnott Is Reinventing Tech Consulting" → extract the company name from the text/URL, not the headline
+
+SEARCH RESULTS:
+${companyList}
+
+Return ONLY valid JSON:
+{
+  "companies": [
+    { "index": 1, "name": "Actual Company Name" }
+  ]
+}`;
+
+    try {
+      const response = await withRetry(() => anthropic.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 2000,
+        messages: [{ role: "user", content: prompt }],
+      }), 'Claude company name extraction');
+
+      let jsonText = "";
+      for (const block of response.content) {
+        if (block.type === "text") jsonText += block.text;
+      }
+
+      jsonText = jsonText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+      const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const data = JSON.parse(jsonMatch[0]);
+        const names = data.companies || [];
+        for (const entry of names) {
+          const idx = (entry.index || 0) - 1;
+          if (idx >= 0 && idx < companies.length && entry.name) {
+            companies[idx].title = entry.name;
+          }
+        }
+      }
+    } catch (error: any) {
+      console.warn(`[WI] Company name extraction failed, using raw titles:`, error?.message);
+    }
+
+    return companies;
   }
 
   private async classifyAndEnrichContacts(
@@ -451,7 +510,6 @@ Return ONLY valid JSON:
       return;
     }
 
-    const apollo = new ApolloEnrichment(apolloApiKey);
     const nonPeContacts = await db
       .select()
       .from(schema.targetContacts)
@@ -461,21 +519,42 @@ Return ONLY valid JSON:
 
     for (const contact of toEnrich) {
       try {
-        const searchResult = await apollo.enrichContacts([
-          {
-            name: contact.companyName,
-            title: "CEO",
-            company: contact.companyName,
-          },
-        ]);
+        // Extract domain from company website for Apollo org search
+        let domain = '';
+        try {
+          domain = new URL(contact.companyWebsite || '').hostname.replace('www.', '');
+        } catch { /* no valid URL */ }
 
-        if (searchResult.length > 0 && searchResult[0].verified) {
+        // Search Apollo by organization name + leadership titles (not person name)
+        const apolloResponse = await fetch('https://api.apollo.io/v1/mixed_people/search', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-cache',
+            'X-Api-Key': apolloApiKey,
+          },
+          body: JSON.stringify({
+            organization_names: [contact.companyName],
+            q_organization_domains: domain || undefined,
+            person_titles: ["CEO", "Founder", "Owner", "President", "Managing Director"],
+            per_page: 1,
+          }),
+        });
+
+        if (!apolloResponse.ok) {
+          throw new Error(`Apollo API error: ${apolloResponse.statusText}`);
+        }
+
+        const apolloData = await apolloResponse.json();
+        const person = apolloData.people?.[0];
+
+        if (person && (person.email || person.name)) {
           await db
             .update(schema.targetContacts)
             .set({
-              contactName: searchResult[0].name !== contact.companyName ? searchResult[0].name : null,
-              contactEmail: searchResult[0].email || null,
-              contactPhone: searchResult[0].phone || null,
+              contactName: person.name || null,
+              contactEmail: person.email || null,
+              contactPhone: person.phone_numbers?.[0]?.sanitized_number || null,
               enrichmentStatus: "enriched",
             })
             .where(eq(schema.targetContacts.id, contact.id));
@@ -523,6 +602,8 @@ TONE & STYLE:
 - NOT a sales pitch — this is a valuable market update that happens to make business owners think about timing
 - Include specific data points, multiples, and buyer names
 - End with a soft observation about market timing (not a CTA)
+- Do NOT use emojis, emoji-like symbols, or special Unicode characters anywhere in the content
+- Use clean, professional HTML only — no decorative characters
 
 STRUCTURE:
 1. Subject line (compelling, not clickbait)
