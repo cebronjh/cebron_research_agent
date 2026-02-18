@@ -242,6 +242,20 @@ class Storage {
       .returning();
     return result[0];
   }
+  async toggleReportStarred(id: number, isStarred: boolean) {
+    await db
+      .update(schema.reports)
+      .set({ isStarred })
+      .where(eq(schema.reports.id, id));
+  }
+
+  async moveReportToFolder(id: number, folder: string | null) {
+    await db
+      .update(schema.reports)
+      .set({ folder })
+      .where(eq(schema.reports.id, id));
+  }
+
   async clearAllData() {
     // Delete in FK order: outreach → discovery_queue → reports → workflows
     await db.delete(schema.outreachStyles);

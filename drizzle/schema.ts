@@ -23,6 +23,8 @@ export const reports = pgTable("reports", {
   status: text("status"),
   qualityScore: integer("quality_score"),
   contactsFound: integer("contacts_found"),
+  isStarred: boolean("is_starred").default(false),
+  folder: text("folder"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

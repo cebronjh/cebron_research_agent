@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
 import {
@@ -35,9 +35,9 @@ import {
   Clock,
   TrendingUp,
   ExternalLink,
-  Tag,
   Plus,
   Folder,
+  FolderPlus,
   FileText,
   X,
   Mail,
@@ -47,14 +47,17 @@ import {
   Loader2,
   Copy,
   MessageSquare,
+  MoreVertical,
+  FolderInput,
+  ArchiveRestore,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/components/ui/use-toast";
 
-type Folder = {
+type FolderItem = {
   id: string;
   name: string;
-  type: string;
+  type: "all" | "starred" | "archived" | "custom";
   count: number;
 };
 
@@ -64,6 +67,8 @@ export default function LibraryPage() {
   const [filterIndustry, setFilterIndustry] = useState<string>("all");
   const [sortBy, setSortBy] = useState<string>("date");
   const [selectedReportId, setSelectedReportId] = useState<number | null>(null);
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   const { data: reports, isLoading } = useQuery({
     queryKey: ["/api/reports"],
@@ -74,16 +79,71 @@ export default function LibraryPage() {
     enabled: selectedReportId !== null,
   });
 
-  const folders: Folder[] = [
-    { id: "all", name: "All Reports", type: "custom", count: reports?.length || 0 },
-    { id: "starred", name: "Starred", type: "starred", count: 0 },
-    { id: "archived", name: "Archived", type: "archived", count: 0 },
-  ];
+  // Compute folders dynamically from report data
+  const folders = useMemo<FolderItem[]>(() => {
+    if (!reports) return [
+      { id: "all", name: "All Reports", type: "all", count: 0 },
+      { id: "starred", name: "Starred", type: "starred", count: 0 },
+      { id: "archived", name: "Archived", type: "archived", count: 0 },
+    ];
+
+    const nonArchived = reports.filter((r: any) => r.folder !== "archived");
+    const starred = reports.filter((r: any) => r.isStarred);
+    const archived = reports.filter((r: any) => r.folder === "archived");
+
+    // Collect custom folder names (excluding "archived")
+    const customFolderNames = new Set<string>();
+    reports.forEach((r: any) => {
+      if (r.folder && r.folder !== "archived") {
+        customFolderNames.add(r.folder);
+      }
+    });
+
+    const builtIn: FolderItem[] = [
+      { id: "all", name: "All Reports", type: "all", count: nonArchived.length },
+      { id: "starred", name: "Starred", type: "starred", count: starred.length },
+      { id: "archived", name: "Archived", type: "archived", count: archived.length },
+    ];
+
+    const custom: FolderItem[] = Array.from(customFolderNames)
+      .sort()
+      .map((name) => ({
+        id: `folder:${name}`,
+        name,
+        type: "custom" as const,
+        count: reports.filter((r: any) => r.folder === name).length,
+      }));
+
+    return [...builtIn, ...custom];
+  }, [reports]);
+
+  // Get unique custom folder names for move-to-folder options
+  const customFolderNames = useMemo(() => {
+    if (!reports) return [];
+    const names = new Set<string>();
+    reports.forEach((r: any) => {
+      if (r.folder && r.folder !== "archived") names.add(r.folder);
+    });
+    return Array.from(names).sort();
+  }, [reports]);
 
   const industries = [...new Set(reports?.map((r: any) => r.industry).filter(Boolean))];
 
   const filteredReports = reports
     ?.filter((report: any) => {
+      // Folder filtering
+      if (selectedFolder === "all") {
+        if (report.folder === "archived") return false;
+      } else if (selectedFolder === "starred") {
+        if (!report.isStarred) return false;
+      } else if (selectedFolder === "archived") {
+        if (report.folder !== "archived") return false;
+      } else if (selectedFolder.startsWith("folder:")) {
+        const folderName = selectedFolder.slice("folder:".length);
+        if (report.folder !== folderName) return false;
+      }
+
+      // Search filter
       if (searchTerm && !report.companyName.toLowerCase().includes(searchTerm.toLowerCase())) {
         return false;
       }
@@ -148,12 +208,27 @@ export default function LibraryPage() {
                     <div className="flex items-center gap-2">
                       {folder.type === "starred" && <Star className="h-4 w-4" />}
                       {folder.type === "archived" && <Archive className="h-4 w-4" />}
+                      {folder.type === "all" && <Folder className="h-4 w-4" />}
                       {folder.type === "custom" && <Folder className="h-4 w-4" />}
                       <span className="font-medium">{folder.name}</span>
                     </div>
                     <Badge variant="secondary">{folder.count}</Badge>
                   </button>
                 ))}
+                <Separator className="my-2" />
+                <button
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-muted-foreground hover:bg-gray-100 transition-colors"
+                  onClick={() => {
+                    const name = prompt("New folder name:");
+                    if (name && name.trim() && name.trim().toLowerCase() !== "archived") {
+                      // Just create the folder by selecting it — it will appear when a report is moved into it
+                      toast({ title: "Folder ready", description: `Move reports to "${name.trim()}" using the menu on each card.` });
+                    }
+                  }}
+                >
+                  <FolderPlus className="h-4 w-4" />
+                  <span>New Folder</span>
+                </button>
               </CardContent>
             </Card>
 
@@ -165,6 +240,10 @@ export default function LibraryPage() {
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">Total Reports</span>
                   <span className="font-bold">{reports?.length || 0}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Starred</span>
+                  <span className="font-bold">{reports?.filter((r: any) => r.isStarred).length || 0}</span>
                 </div>
               </CardContent>
             </Card>
@@ -220,9 +299,10 @@ export default function LibraryPage() {
             ) : filteredReports && filteredReports.length > 0 ? (
               <div className="space-y-4">
                 {filteredReports.map((report: any) => (
-                  <ReportCard 
-                    key={report.id} 
+                  <ReportCard
+                    key={report.id}
                     report={report}
+                    customFolderNames={customFolderNames}
                     onViewReport={(id) => setSelectedReportId(id)}
                   />
                 ))}
@@ -233,11 +313,13 @@ export default function LibraryPage() {
                   <BookOpen className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
                   <h3 className="text-lg font-semibold mb-2">No Reports Yet</h3>
                   <p className="text-muted-foreground mb-4">
-                    Start by running a discovery search
+                    {selectedFolder !== "all" ? "No reports in this folder." : "Start by running a discovery search"}
                   </p>
-                  <Link href="/agent">
-                    <Button>Go to Agent Dashboard</Button>
-                  </Link>
+                  {selectedFolder === "all" && (
+                    <Link href="/agent">
+                      <Button>Go to Agent Dashboard</Button>
+                    </Link>
+                  )}
                 </CardContent>
               </Card>
             )}
@@ -542,9 +624,68 @@ function OutreachSection({ reportId }: { reportId: number }) {
   );
 }
 
-function ReportCard({ report, onViewReport }: { report: any; onViewReport: (id: number) => void }) {
-  const [isStarred, setIsStarred] = useState(false);
-  const [tags, setTags] = useState<string[]>([]);
+function ReportCard({
+  report,
+  customFolderNames,
+  onViewReport,
+}: {
+  report: any;
+  customFolderNames: string[];
+  onViewReport: (id: number) => void;
+}) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [menuOpen]);
+
+  const starMutation = useMutation({
+    mutationFn: async (isStarred: boolean) => {
+      const res = await fetch(`/api/reports/${report.id}/star`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isStarred }),
+      });
+      if (!res.ok) throw new Error("Failed to toggle star");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/reports"] });
+    },
+  });
+
+  const folderMutation = useMutation({
+    mutationFn: async (folder: string | null) => {
+      const res = await fetch(`/api/reports/${report.id}/folder`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folder }),
+      });
+      if (!res.ok) throw new Error("Failed to move report");
+      return res.json();
+    },
+    onSuccess: (_data, folder) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/reports"] });
+      toast({
+        title: folder === "archived" ? "Archived" : folder ? `Moved to ${folder}` : "Moved to All Reports",
+      });
+    },
+  });
+
+  const handleMenuAction = (folder: string | null) => {
+    setMenuOpen(false);
+    folderMutation.mutate(folder);
+  };
 
   return (
     <Card className="hover:shadow-md transition-shadow">
@@ -556,11 +697,75 @@ function ReportCard({ report, onViewReport }: { report: any; onViewReport: (id: 
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => setIsStarred(!isStarred)}
+                onClick={() => starMutation.mutate(!report.isStarred)}
+                disabled={starMutation.isPending}
                 className="ml-auto"
               >
-                <Star className={`h-4 w-4 ${isStarred ? "fill-yellow-400 text-yellow-400" : ""}`} />
+                <Star className={`h-4 w-4 ${report.isStarred ? "fill-yellow-400 text-yellow-400" : ""}`} />
               </Button>
+              <div className="relative" ref={menuRef}>
+                <Button variant="ghost" size="icon" onClick={() => setMenuOpen(!menuOpen)}>
+                  <MoreVertical className="h-4 w-4" />
+                </Button>
+                {menuOpen && (
+                  <div className="absolute right-0 top-full mt-1 z-50 min-w-[180px] bg-white border rounded-md shadow-lg py-1">
+                    {report.folder === "archived" ? (
+                      <button
+                        className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-100 text-left"
+                        onClick={() => handleMenuAction(null)}
+                      >
+                        <ArchiveRestore className="h-4 w-4" />
+                        Unarchive
+                      </button>
+                    ) : (
+                      <button
+                        className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-100 text-left"
+                        onClick={() => handleMenuAction("archived")}
+                      >
+                        <Archive className="h-4 w-4" />
+                        Archive
+                      </button>
+                    )}
+                    {report.folder && (
+                      <button
+                        className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-100 text-left"
+                        onClick={() => handleMenuAction(null)}
+                      >
+                        <Folder className="h-4 w-4" />
+                        Remove from folder
+                      </button>
+                    )}
+                    {customFolderNames.filter((name) => name !== report.folder).length > 0 && (
+                      <div className="border-t my-1" />
+                    )}
+                    {customFolderNames
+                      .filter((name) => name !== report.folder)
+                      .map((name) => (
+                        <button
+                          key={name}
+                          className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-100 text-left"
+                          onClick={() => handleMenuAction(name)}
+                        >
+                          <FolderInput className="h-4 w-4" />
+                          Move to {name}
+                        </button>
+                      ))}
+                    <button
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-100 text-left"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        const name = prompt("New folder name:");
+                        if (name && name.trim() && name.trim().toLowerCase() !== "archived") {
+                          folderMutation.mutate(name.trim());
+                        }
+                      }}
+                    >
+                      <FolderPlus className="h-4 w-4" />
+                      New folder...
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
             {report.websiteUrl && (
               <p className="text-sm text-muted-foreground">{report.websiteUrl}</p>
@@ -579,6 +784,12 @@ function ReportCard({ report, onViewReport }: { report: any; onViewReport: (id: 
             </Badge>
           )}
           {report.geographicFocus && <Badge variant="outline">{report.geographicFocus}</Badge>}
+          {report.folder && report.folder !== "archived" && (
+            <Badge variant="secondary">
+              <Folder className="h-3 w-3 mr-1" />
+              {report.folder}
+            </Badge>
+          )}
         </div>
 
         {report.executiveSummary && (
@@ -586,27 +797,6 @@ function ReportCard({ report, onViewReport }: { report: any; onViewReport: (id: 
             {report.executiveSummary}
           </p>
         )}
-
-        <div className="flex flex-wrap gap-2">
-          {tags.map((tag) => (
-            <Badge key={tag} variant="secondary" className="gap-1">
-              <Tag className="h-3 w-3" />
-              {tag}
-            </Badge>
-          ))}
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-6 text-xs"
-            onClick={() => {
-              const newTag = prompt("Add tag:");
-              if (newTag) setTags([...tags, newTag]);
-            }}
-          >
-            <Plus className="h-3 w-3 mr-1" />
-            Add Tag
-          </Button>
-        </div>
 
         <div className="flex items-center justify-between pt-2 border-t">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">

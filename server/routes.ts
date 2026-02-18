@@ -248,6 +248,38 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
+  // Toggle report starred status
+  app.put("/api/reports/:id/star", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { isStarred } = req.body;
+      if (typeof isStarred !== "boolean") {
+        return res.status(400).json({ error: "isStarred boolean is required" });
+      }
+      await storage.toggleReportStarred(id, isStarred);
+      res.json({ success: true, isStarred });
+    } catch (error) {
+      console.error("Error toggling star:", error);
+      res.status(500).json({ error: "Failed to toggle star" });
+    }
+  });
+
+  // Move report to folder
+  app.put("/api/reports/:id/folder", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { folder } = req.body;
+      if (folder !== null && typeof folder !== "string") {
+        return res.status(400).json({ error: "folder must be a string or null" });
+      }
+      await storage.moveReportToFolder(id, folder || null);
+      res.json({ success: true, folder: folder || null });
+    } catch (error) {
+      console.error("Error moving to folder:", error);
+      res.status(500).json({ error: "Failed to move to folder" });
+    }
+  });
+
   // Generate outreach message for a report
   app.post("/api/reports/:id/outreach", async (req, res) => {
     try {
