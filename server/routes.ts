@@ -99,6 +99,21 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
+  // Get discovery queue items for a specific workflow
+  app.get("/api/workflows/:id/companies", async (req, res) => {
+    try {
+      const workflowId = parseInt(req.params.id);
+      if (isNaN(workflowId)) {
+        return res.status(400).json({ error: "Invalid workflow ID" });
+      }
+      const companies = await storage.getDiscoveryQueue(workflowId);
+      res.json(companies);
+    } catch (error) {
+      console.error("Error fetching workflow companies:", error);
+      res.status(500).json({ error: "Failed to fetch workflow companies" });
+    }
+  });
+
   // Get companies in discovery queue (pending approval)
   app.get("/api/discovery-queue/pending", async (req, res) => {
     try {

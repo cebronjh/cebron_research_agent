@@ -91,10 +91,7 @@ export class AgentOrchestrator {
         companiesFound: companies.length,
       });
 
-      const scoredCompanies = await this.scoreCompanies(companies, config.searchCriteria);
-      await storage.updateWorkflow(workflow.id, {
-        companiesScored: scoredCompanies.length,
-      });
+      const scoredCompanies = await this.scoreCompanies(companies, config.searchCriteria, workflow.id);
 
       const { autoApproved, needsReview } = await this.applyAutoApproval(
         scoredCompanies,
@@ -141,7 +138,8 @@ export class AgentOrchestrator {
 
       console.log(`[Agent] Workflow ${workflow.id} complete: ${researched} companies researched, ${needsReview.length} need review`);
       return workflow.id;
-    } catch (error) {
+    } catch (error: any) {
+      console.error(`[Agent] Workflow ${workflow.id} FAILED:`, error?.message || error);
       await storage.updateWorkflow(workflow.id, {
         status: "failed",
         completedAt: new Date(),
@@ -231,19 +229,33 @@ export class AgentOrchestrator {
     return parts.join(" ");
   }
 
-  private async scoreCompanies(companies: any[], criteria: SearchCriteria): Promise<any[]> {
+  private async scoreCompanies(companies: any[], criteria: SearchCriteria, workflowId?: number): Promise<any[]> {
     console.log("[Agent] Scoring companies with Claude...");
+    const { storage } = await import("./storage");
 
     const scored = [];
+    let scoredCount = 0;
 
     for (const company of companies) {
       try {
         const score = await this.scoreCompany(company, criteria);
         scored.push({ ...company, ...score, strategy: criteria.strategy });
-        console.log(`[Agent] Scored ${company.title}: ${score.score}/10 (${score.confidence})`);
+        scoredCount++;
+        console.log(`[Agent] Scored ${company.title}: ${score.score}/10 (${score.confidence}) [${scoredCount}/${companies.length}]`);
+
+        // Update workflow progress every 5 companies
+        if (workflowId && scoredCount % 5 === 0) {
+          await storage.updateWorkflow(workflowId, { companiesScored: scoredCount });
+        }
       } catch (error) {
         console.error(`[Agent] Failed to score ${company.title}, skipping:`, error);
+        scoredCount++;
       }
+    }
+
+    // Final update
+    if (workflowId) {
+      await storage.updateWorkflow(workflowId, { companiesScored: scoredCount });
     }
 
     // Apply revenue filters
@@ -390,7 +402,7 @@ Confidence levels:
     }
 
     return {
-      score: data.score ?? 5,
+      score: Math.round(data.score ?? 5),
       confidence: data.confidence ?? "Low",
       reasoning: data.reasoning ?? "",
       estimatedRevenue: data.estimatedRevenue ?? "",
@@ -414,19 +426,26 @@ Confidence levels:
     const { storage } = await import("./storage");
 
     for (const company of companies) {
-      const queueItem = await storage.addToDiscoveryQueue({
-        workflowId,
-        companyName: company.title,
-        websiteUrl: company.url,
-        description: company.text,
-        agentScore: company.score,
-        scoringReason: company.reasoning,
-        confidence: company.confidence,
-        estimatedRevenue: company.estimatedRevenue,
-        industry: company.industry,
-        geographicFocus: company.geographicFocus,
-        approvalStatus: "pending",
-      });
+      let queueItem;
+      try {
+        queueItem = await storage.addToDiscoveryQueue({
+          workflowId,
+          companyName: company.title || "Unknown Company",
+          websiteUrl: company.url || "https://unknown",
+          description: company.text || null,
+          agentScore: Math.round(company.score) || 5,
+          scoringReason: company.reasoning || "",
+          confidence: company.confidence || "Low",
+          estimatedRevenue: company.estimatedRevenue || null,
+          industry: company.industry || null,
+          geographicFocus: company.geographicFocus || null,
+          approvalStatus: "pending",
+        });
+      } catch (queueError) {
+        console.error(`[Agent] Failed to add ${company.title} to queue:`, queueError);
+        needsReview.push({ ...company, queueId: null });
+        continue;
+      }
 
       // Hardcoded score >= 6 threshold for broader auto-approval (20-30 companies)
       const minScore = 6;
