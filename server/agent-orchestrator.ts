@@ -425,10 +425,13 @@ Confidence levels:
 
     const { storage } = await import("./storage");
 
+    const minScore = 6;
+    const confidenceLevels: Record<string, number> = { "Low": 1, "Medium": 2, "High": 3 };
+    const requiredConfidenceLevel = confidenceLevels["Low"] ?? 1;
+
     for (const company of companies) {
-      let queueItem;
       try {
-        queueItem = await storage.addToDiscoveryQueue({
+        const queueItem = await storage.addToDiscoveryQueue({
           workflowId,
           companyName: company.title || "Unknown Company",
           websiteUrl: company.url || "https://unknown",
@@ -441,62 +444,56 @@ Confidence levels:
           geographicFocus: company.geographicFocus || null,
           approvalStatus: "pending",
         });
-      } catch (queueError) {
-        console.error(`[Agent] Failed to add ${company.title} to queue:`, queueError);
+
+        const companyConfidenceLevel = confidenceLevels[company.confidence] ?? 1;
+
+        const isPEBackedBuySide =
+          (company.ownershipType === 'PE-Backed') &&
+          strategy === 'buy-side';
+
+        const revenue = this.parseRevenue(company.estimatedRevenue);
+        const belowThresholdWithIP = revenue < 10000000 && company.ipUpside;
+
+        let reviewReason = '';
+
+        if (isPEBackedBuySide) {
+          reviewReason = 'PE-backed company - requires manual review for buy-side strategy (competitive auction risk)';
+        } else if (belowThresholdWithIP) {
+          reviewReason = `Below revenue threshold ($${(revenue/1000000).toFixed(1)}M) but significant IP upside detected - manual review recommended`;
+        } else if (revenue > 150000000) {
+          reviewReason = `Above revenue threshold ($${(revenue/1000000).toFixed(0)}M) - likely too large, requires manual review`;
+        } else if (company.score < minScore) {
+          reviewReason = `Score ${company.score}/10 below threshold (${minScore})`;
+        } else if (companyConfidenceLevel < requiredConfidenceLevel) {
+          reviewReason = `Confidence ${company.confidence} below required ${rules?.requiredConfidence ?? "Medium"}`;
+        }
+
+        const shouldAutoApprove =
+          company.score >= minScore &&
+          companyConfidenceLevel >= requiredConfidenceLevel &&
+          !isPEBackedBuySide &&
+          !belowThresholdWithIP &&
+          revenue <= 150000000;
+
+        if (shouldAutoApprove) {
+          await storage.updateDiscoveryQueueItem(queueItem.id, {
+            approvalStatus: "auto_approved",
+            autoApprovalReason: `Score ${company.score}/10, ${company.confidence} confidence${company.ownershipType && company.ownershipType !== 'Unknown' ? ', ' + company.ownershipType : ''}`,
+            approvedAt: new Date(),
+          });
+          autoApproved.push({ ...company, queueId: queueItem.id });
+          console.log(`[Agent] ✓ Auto-approved: ${company.title} (${company.score}/10)`);
+        } else {
+          await storage.updateDiscoveryQueueItem(queueItem.id, {
+            approvalStatus: "pending",
+            autoApprovalReason: reviewReason || `Score ${company.score}/10 or needs review`,
+          });
+          needsReview.push({ ...company, queueId: queueItem.id });
+          console.log(`[Agent] → Manual review: ${company.title} (${reviewReason || company.score + '/10'})`);
+        }
+      } catch (companyError: any) {
+        console.error(`[Agent] Error processing ${company.title} in approval:`, companyError?.message || companyError);
         needsReview.push({ ...company, queueId: null });
-        continue;
-      }
-
-      // Hardcoded score >= 6 threshold for broader auto-approval (20-30 companies)
-      const minScore = 6;
-      const confidenceLevels: Record<string, number> = { "Low": 1, "Medium": 2, "High": 3 };
-      const requiredConfidenceLevel = confidenceLevels["Low"] ?? 1;
-      const companyConfidenceLevel = confidenceLevels[company.confidence] ?? 1;
-
-      const isPEBackedBuySide =
-        (company.ownershipType === 'PE-Backed') &&
-        strategy === 'buy-side';
-
-      const revenue = this.parseRevenue(company.estimatedRevenue);
-      const belowThresholdWithIP = revenue < 10000000 && company.ipUpside;
-
-      let reviewReason = '';
-
-      if (isPEBackedBuySide) {
-        reviewReason = 'PE-backed company - requires manual review for buy-side strategy (competitive auction risk)';
-      } else if (belowThresholdWithIP) {
-        reviewReason = `Below revenue threshold ($${(revenue/1000000).toFixed(1)}M) but significant IP upside detected - manual review recommended`;
-      } else if (revenue > 150000000) {
-        reviewReason = `Above revenue threshold ($${(revenue/1000000).toFixed(0)}M) - likely too large, requires manual review`;
-      } else if (company.score < minScore) {
-        reviewReason = `Score ${company.score}/10 below threshold (${minScore})`;
-      } else if (companyConfidenceLevel < requiredConfidenceLevel) {
-        reviewReason = `Confidence ${company.confidence} below required ${rules?.requiredConfidence ?? "Medium"}`;
-      }
-
-      // Auto-approve using configured rules
-      const shouldAutoApprove =
-        company.score >= minScore &&
-        companyConfidenceLevel >= requiredConfidenceLevel &&
-        !isPEBackedBuySide &&
-        !belowThresholdWithIP &&
-        revenue <= 150000000;
-
-      if (shouldAutoApprove) {
-        await storage.updateDiscoveryQueueItem(queueItem.id, {
-          approvalStatus: "auto_approved",
-          autoApprovalReason: `Score ${company.score}/10, ${company.confidence} confidence${company.ownershipType !== 'Unknown' ? ', ' + company.ownershipType : ''}`,
-          approvedAt: new Date(),
-        });
-        autoApproved.push({ ...company, queueId: queueItem.id });
-        console.log(`[Agent] ✓ Auto-approved: ${company.title} (${company.score}/10)`);
-      } else {
-        await storage.updateDiscoveryQueueItem(queueItem.id, {
-          approvalStatus: "pending",
-          autoApprovalReason: reviewReason || `Score ${company.score}/10 or needs review`,
-        });
-        needsReview.push({ ...company, queueId: queueItem.id });
-        console.log(`[Agent] → Manual review: ${company.title} (${reviewReason || company.score + '/10'})`);
       }
     }
 
