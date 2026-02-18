@@ -636,7 +636,10 @@ function ReportCard({
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameValue, setNameValue] = useState(report.companyName);
   const menuRef = useRef<HTMLDivElement>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -648,6 +651,39 @@ function ReportCard({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [menuOpen]);
+
+  useEffect(() => {
+    if (editingName && nameInputRef.current) {
+      nameInputRef.current.focus();
+      nameInputRef.current.select();
+    }
+  }, [editingName]);
+
+  const nameMutation = useMutation({
+    mutationFn: async (companyName: string) => {
+      const res = await fetch(`/api/reports/${report.id}/name`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyName }),
+      });
+      if (!res.ok) throw new Error("Failed to update name");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/reports"] });
+      setEditingName(false);
+    },
+  });
+
+  const saveName = () => {
+    const trimmed = nameValue.trim();
+    if (trimmed && trimmed !== report.companyName) {
+      nameMutation.mutate(trimmed);
+    } else {
+      setNameValue(report.companyName);
+      setEditingName(false);
+    }
+  };
 
   const starMutation = useMutation({
     mutationFn: async (isStarred: boolean) => {
@@ -693,7 +729,28 @@ function ReportCard({
         <div className="flex items-start justify-between">
           <div className="flex-1">
             <div className="flex items-center gap-3 mb-2">
-              <CardTitle className="text-xl">{report.companyName}</CardTitle>
+              {editingName ? (
+                <input
+                  ref={nameInputRef}
+                  value={nameValue}
+                  onChange={(e) => setNameValue(e.target.value)}
+                  onBlur={saveName}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") saveName();
+                    if (e.key === "Escape") { setNameValue(report.companyName); setEditingName(false); }
+                  }}
+                  className="text-xl font-semibold bg-transparent border-b-2 border-primary outline-none px-0 py-0 min-w-0 flex-1"
+                />
+              ) : (
+                <CardTitle
+                  className="text-xl cursor-pointer hover:text-primary transition-colors group/name flex items-center gap-1"
+                  title="Click to edit company name"
+                  onClick={() => { setNameValue(report.companyName); setEditingName(true); }}
+                >
+                  {report.companyName}
+                  <Edit2 className="h-3 w-3 opacity-0 group-hover/name:opacity-50 transition-opacity" />
+                </CardTitle>
+              )}
               <Button
                 variant="ghost"
                 size="icon"

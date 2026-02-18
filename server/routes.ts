@@ -248,6 +248,22 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
+  // Update report company name
+  app.put("/api/reports/:id/name", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { companyName } = req.body;
+      if (!companyName || typeof companyName !== "string" || companyName.trim().length === 0) {
+        return res.status(400).json({ error: "companyName is required" });
+      }
+      await storage.updateReport(id, { companyName: companyName.trim() });
+      res.json({ success: true, companyName: companyName.trim() });
+    } catch (error) {
+      console.error("Error updating report name:", error);
+      res.status(500).json({ error: "Failed to update report name" });
+    }
+  });
+
   // Toggle report starred status
   app.put("/api/reports/:id/star", async (req, res) => {
     try {
