@@ -246,19 +246,59 @@ export default function LibraryPage() {
       </div>
 
       <Dialog open={selectedReportId !== null} onOpenChange={(open) => !open && setSelectedReportId(null)}>
-        <DialogContent className="max-w-4xl max-h-[90vh]">
+        <DialogContent className="max-w-4xl max-h-[90vh] bg-white text-black">
           <DialogHeader>
             <div className="flex items-center justify-between">
-              <DialogTitle className="text-2xl">
+              <DialogTitle className="text-2xl text-black">
                 {fullReport?.companyName || "Loading..."}
               </DialogTitle>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setSelectedReportId(null)}
-              >
-                <X className="h-4 w-4" />
-              </Button>
+              <div className="flex items-center gap-2">
+                {fullReport?.report && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-black border-gray-300 hover:bg-gray-100"
+                    onClick={() => {
+                      const printWindow = window.open('', '_blank');
+                      if (printWindow) {
+                        printWindow.document.write(`
+                          <html><head><title>${fullReport.companyName} - Research Report</title>
+                          <style>
+                            body { font-family: system-ui, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #111; line-height: 1.6; }
+                            h1 { font-size: 24px; margin-bottom: 8px; }
+                            h2 { font-size: 20px; margin-top: 24px; }
+                            h3 { font-size: 16px; }
+                            pre { white-space: pre-wrap; font-family: inherit; }
+                            .meta { color: #666; font-size: 14px; margin-bottom: 24px; }
+                            @media print { body { margin: 20px; } }
+                          </style></head><body>
+                          <h1>${fullReport.companyName}</h1>
+                          <div class="meta">
+                            ${fullReport.industry ? `Industry: ${fullReport.industry} | ` : ''}
+                            ${fullReport.revenueRange ? `Revenue: ${fullReport.revenueRange} | ` : ''}
+                            ${fullReport.geographicFocus || ''}
+                          </div>
+                          <pre>${fullReport.report.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+                          </body></html>
+                        `);
+                        printWindow.document.close();
+                        printWindow.print();
+                      }
+                    }}
+                  >
+                    <FileText className="h-3 w-3 mr-1" />
+                    Print / PDF
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-black hover:bg-gray-100"
+                  onClick={() => setSelectedReportId(null)}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
             {fullReport?.websiteUrl && (
               <DialogDescription>
@@ -266,7 +306,7 @@ export default function LibraryPage() {
                   href={fullReport.websiteUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-primary hover:underline flex items-center gap-1"
+                  className="text-blue-600 hover:underline flex items-center gap-1"
                 >
                   {fullReport.websiteUrl}
                   <ExternalLink className="h-3 w-3" />
@@ -376,7 +416,7 @@ function OutreachSection({ reportId }: { reportId: number }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold flex items-center gap-2">
+        <h3 className="text-lg font-semibold flex items-center gap-2 text-black">
           <Mail className="h-5 w-5" />
           Outreach Messages
         </h3>
