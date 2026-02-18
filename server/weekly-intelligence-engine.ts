@@ -696,16 +696,24 @@ TONE & STYLE:
 - NOT a sales pitch — this is a valuable market update that happens to make business owners think about timing
 - Include specific data points, multiples, and buyer names
 - End with a soft observation about market timing (not a CTA)
-- Do NOT use emojis, emoji-like symbols, or special Unicode characters anywhere in the content
-- Use clean, professional HTML only — no decorative characters
+
+STRICT FORMATTING RULES:
+- ABSOLUTELY NO emojis, emoji-like symbols, or special Unicode characters (no 📊, 💰, 🏥, etc.)
+- ABSOLUTELY NO markdown formatting (no ##, ###, **, *, etc.)
+- Use ONLY clean, professional HTML tags for structure
+- Section headers must use <h3> tags with inline styling, NOT markdown hashes
+- Use <p> for paragraphs, <ul>/<li> for lists, <strong> for bold, <em> for italic
+- Style should look like professional business correspondence from a top-tier advisory firm
+- Use a clean color palette: dark headers (#2c3e50), subtle accent (#34495e), body text (#333)
 
 STRUCTURE:
 1. Subject line (compelling, not clickbait)
 2. Opening hook (market trend or notable deal)
-3. Sector overview with data
+3. Market snapshot with key data points
 4. Why buyers are active in this space
-5. What this means for business owners in ${sector.name}
-6. Market timing observation
+5. Valuation landscape
+6. What this means for business owners in ${sector.name}
+7. Market timing observation (subtle, not a CTA)
 
 Return the newsletter in this JSON format:
 {
@@ -713,7 +721,11 @@ Return the newsletter in this JSON format:
   "content": "..."
 }
 
-The content should be formatted in clean HTML suitable for email.`;
+The content field must be clean HTML wrapped in a styled container div. Example format:
+<div style="font-family: Georgia, serif; line-height: 1.7; color: #333; max-width: 650px;">
+  <h2 style="color: #2c3e50;">Section Title</h2>
+  <p>Professional paragraph text...</p>
+</div>`;
 
     const response = await withRetry(() => anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
