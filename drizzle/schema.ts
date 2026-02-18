@@ -107,3 +107,53 @@ export const companies = pgTable("companies", {
 
 // Add researchReports alias for storage compatibility
 export const researchReports = reports;
+
+// Weekly Intelligence tables
+export const weeklyTrends = pgTable("weekly_trends", {
+  id: serial("id").primaryKey(),
+  weekStarting: timestamp("week_starting").notNull(),
+  rawNewsData: jsonb("raw_news_data"),
+  rawTrendsData: jsonb("raw_trends_data"),
+  scanCompletedAt: timestamp("scan_completed_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const hotSectors = pgTable("hot_sectors", {
+  id: serial("id").primaryKey(),
+  trendWeekId: integer("trend_week_id").references(() => weeklyTrends.id),
+  sectorName: text("sector_name").notNull(),
+  heatScore: integer("heat_score").notNull(),
+  reasoning: text("reasoning"),
+  dealActivity: text("deal_activity"),
+  averageMultiple: text("average_multiple"),
+  activeBuyers: jsonb("active_buyers"),
+  searchQuery: text("search_query"),
+  peBackedFiltered: integer("pe_backed_filtered").default(0),
+  status: text("status").default("pending"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const sectorNewsletters = pgTable("sector_newsletters", {
+  id: serial("id").primaryKey(),
+  sectorId: integer("sector_id").references(() => hotSectors.id),
+  subject: text("subject").notNull(),
+  content: text("content").notNull(),
+  sentAt: timestamp("sent_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const targetContacts = pgTable("target_contacts", {
+  id: serial("id").primaryKey(),
+  sectorId: integer("sector_id").references(() => hotSectors.id),
+  companyName: text("company_name").notNull(),
+  contactName: text("contact_name"),
+  contactEmail: text("contact_email"),
+  contactPhone: text("contact_phone"),
+  companyWebsite: text("company_website"),
+  estimatedRevenue: text("estimated_revenue"),
+  ownershipType: text("ownership_type"),
+  sourceWorkflow: text("source_workflow").default("weekly_intelligence"),
+  enrichmentStatus: text("enrichment_status").default("pending"),
+  newsletterSent: boolean("newsletter_sent").default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});

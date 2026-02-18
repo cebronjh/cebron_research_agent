@@ -1,7 +1,9 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "./storage";
+import { storage, db } from "./storage";
 import { agentOrchestrator } from "./agent-orchestrator";
+import { eq, desc } from "drizzle-orm";
+import * as schema from "../drizzle/schema";
 
 export function registerRoutes(app: Express): Server {
   // Get all agent configurations
@@ -435,6 +437,154 @@ export function registerRoutes(app: Express): Server {
     } catch (error) {
       console.error("Error clearing data:", error);
       res.status(500).json({ error: "Failed to clear data" });
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════
+  // Weekly Intelligence endpoints
+  // ══════════════════════════════════════════════════════════
+
+  // Get latest weekly intelligence scan with hot sectors
+  app.get("/api/weekly-intelligence/latest", async (req, res) => {
+    try {
+      // Get most recent weekly trend
+      const [latestTrend] = await db
+        .select()
+        .from(schema.weeklyTrends)
+        .orderBy(desc(schema.weeklyTrends.createdAt))
+        .limit(1);
+
+      if (!latestTrend) {
+        return res.json({ trend: null, sectors: [] });
+      }
+
+      // Get hot sectors for this trend week
+      const sectors = await db
+        .select()
+        .from(schema.hotSectors)
+        .where(eq(schema.hotSectors.trendWeekId, latestTrend.id))
+        .orderBy(desc(schema.hotSectors.heatScore));
+
+      // For each sector, get company count, contact count, and newsletter
+      const sectorsWithCounts = await Promise.all(
+        sectors.map(async (sector) => {
+          const contacts = await db
+            .select()
+            .from(schema.targetContacts)
+            .where(eq(schema.targetContacts.sectorId, sector.id));
+
+          const nonPeContacts = contacts.filter(
+            (c) => c.ownershipType !== "PE-Backed"
+          );
+
+          const [newsletter] = await db
+            .select()
+            .from(schema.sectorNewsletters)
+            .where(eq(schema.sectorNewsletters.sectorId, sector.id))
+            .limit(1);
+
+          return {
+            ...sector,
+            companyCount: contacts.length,
+            contactCount: nonPeContacts.length,
+            newsletterId: newsletter?.id || null,
+            newsletterSentAt: newsletter?.sentAt || null,
+          };
+        })
+      );
+
+      res.json({
+        trend: latestTrend,
+        sectors: sectorsWithCounts,
+      });
+    } catch (error) {
+      console.error("Error fetching weekly intelligence:", error);
+      res.status(500).json({ error: "Failed to fetch weekly intelligence" });
+    }
+  });
+
+  // Get newsletter detail with contacts
+  app.get("/api/newsletters/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+
+      const [newsletter] = await db
+        .select()
+        .from(schema.sectorNewsletters)
+        .where(eq(schema.sectorNewsletters.id, id))
+        .limit(1);
+
+      if (!newsletter) {
+        return res.status(404).json({ error: "Newsletter not found" });
+      }
+
+      // Get sector info
+      const [sector] = await db
+        .select()
+        .from(schema.hotSectors)
+        .where(eq(schema.hotSectors.id, newsletter.sectorId!))
+        .limit(1);
+
+      // Get contacts for this sector (exclude PE-backed)
+      const contacts = await db
+        .select()
+        .from(schema.targetContacts)
+        .where(eq(schema.targetContacts.sectorId, newsletter.sectorId!));
+
+      const filteredContacts = contacts.filter(
+        (c) => c.ownershipType !== "PE-Backed"
+      );
+
+      // Get the trend week for date context
+      let trendWeek = null;
+      if (sector?.trendWeekId) {
+        const [tw] = await db
+          .select()
+          .from(schema.weeklyTrends)
+          .where(eq(schema.weeklyTrends.id, sector.trendWeekId))
+          .limit(1);
+        trendWeek = tw;
+      }
+
+      res.json({
+        newsletter,
+        sector,
+        trendWeek,
+        contacts: filteredContacts,
+      });
+    } catch (error) {
+      console.error("Error fetching newsletter:", error);
+      res.status(500).json({ error: "Failed to fetch newsletter" });
+    }
+  });
+
+  // Mark newsletter as sent
+  app.post("/api/newsletters/:id/mark-sent", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      await db
+        .update(schema.sectorNewsletters)
+        .set({ sentAt: new Date() })
+        .where(eq(schema.sectorNewsletters.id, id));
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error marking newsletter sent:", error);
+      res.status(500).json({ error: "Failed to mark newsletter as sent" });
+    }
+  });
+
+  // Archive of past weekly scans
+  app.get("/api/weekly-intelligence/archive", async (req, res) => {
+    try {
+      const trends = await db
+        .select()
+        .from(schema.weeklyTrends)
+        .orderBy(desc(schema.weeklyTrends.weekStarting))
+        .limit(20);
+      res.json(trends);
+    } catch (error) {
+      console.error("Error fetching intelligence archive:", error);
+      res.status(500).json({ error: "Failed to fetch archive" });
     }
   });
 

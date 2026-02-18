@@ -3,6 +3,8 @@ import { Button } from "@/components/ui/button";
 import AgentPage from "@/pages/agent";
 import LibraryPage from "@/pages/library-page";
 import ReviewQueuePage from "@/pages/review-queue";
+import WeeklyIntelligencePage from "@/pages/weekly-intelligence";
+import NewsletterDetailPage from "@/pages/newsletter-detail";
 
 function App() {
   return (
@@ -12,6 +14,10 @@ function App() {
         <Route path="/agent" component={AgentPage} />
         <Route path="/library" component={LibraryPage} />
         <Route path="/review-queue" component={ReviewQueuePage} />
+        <Route path="/weekly-intelligence" component={WeeklyIntelligencePage} />
+        <Route path="/newsletter/:id">
+          {(params) => <NewsletterDetailPage id={params.id} />}
+        </Route>
         <Route component={NotFound} />
       </Switch>
     </div>
@@ -41,6 +47,9 @@ function HomePage() {
             </Link>
             <Link href="/library">
               <Button size="lg" variant="outline">Research Library</Button>
+            </Link>
+            <Link href="/weekly-intelligence">
+              <Button size="lg" variant="outline">Weekly Intelligence</Button>
             </Link>
           </div>
         </div>
