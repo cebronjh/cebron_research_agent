@@ -242,6 +242,14 @@ class Storage {
       .returning();
     return result[0];
   }
+  async clearAllData() {
+    // Delete in FK order: outreach → discovery_queue → reports → workflows
+    await db.delete(schema.outreachStyles);
+    await db.delete(schema.discoveryQueue);
+    await db.delete(schema.reports);
+    await db.delete(schema.agentWorkflows);
+    console.log("[Storage] All search data cleared (outreach, discovery_queue, reports, workflows)");
+  }
 }
 
 export const storage = new Storage();

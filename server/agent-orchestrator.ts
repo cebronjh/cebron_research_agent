@@ -53,6 +53,7 @@ interface SearchCriteria {
   yearsInBusiness?: string[];
   fundingStatus?: string[];
   growthStatus?: string[];
+  peFilter?: "pe-backed" | "not-pe-backed" | "both";
 }
 
 interface AutoApprovalRules {
@@ -97,7 +98,8 @@ export class AgentOrchestrator {
         scoredCompanies,
         config.autoApprovalRules,
         workflow.id,
-        config.searchCriteria.strategy || 'buy-side'
+        config.searchCriteria.strategy || 'buy-side',
+        config.searchCriteria.peFilter
       );
 
       await storage.updateWorkflow(workflow.id, {
@@ -226,6 +228,13 @@ export class AgentOrchestrator {
     if (criteria.yearsInBusiness?.length) parts.push(`established ${criteria.yearsInBusiness.join(" or ")} years`);
     if (criteria.fundingStatus?.length) parts.push(criteria.fundingStatus.join(" or "));
     if (criteria.growthStatus?.length) parts.push(criteria.growthStatus.join(" or "));
+
+    if (criteria.peFilter === "not-pe-backed") {
+      parts.push("NOT private equity backed NOT PE-backed NOT portfolio company");
+    } else if (criteria.peFilter === "pe-backed") {
+      parts.push("private equity backed");
+    }
+
     return parts.join(" ");
   }
 
@@ -315,6 +324,13 @@ export class AgentOrchestrator {
   }
 
   private async scoreCompany(company: any, criteria: SearchCriteria): Promise<any> {
+    let peInstruction = "";
+    if (criteria.peFilter === "not-pe-backed") {
+      peInstruction = "\n- PE Preference: Exclude PE-backed. If the company is PE-backed or a portfolio company, score 1/10.";
+    } else if (criteria.peFilter === "pe-backed") {
+      peInstruction = "\n- PE Preference: Only PE-backed. If the company is NOT PE-backed, score 1/10.";
+    }
+
     const prompt = `Score this company for M&A target fit (1-10):
 
 Company: ${company.title}
@@ -325,7 +341,7 @@ Criteria:
 - Industry: ${criteria.industry || "Any"}
 - Revenue: ${criteria.revenueRange || "Any"}
 - Geography: ${criteria.geographicFocus || "Any"}
-- Strategy: ${criteria.strategy || "buy-side"}
+- Strategy: ${criteria.strategy || "buy-side"}${peInstruction}
 
 Return JSON only with this structure:
 {
@@ -418,7 +434,8 @@ Confidence levels:
     companies: any[],
     rules: AutoApprovalRules,
     workflowId: number,
-    strategy: 'buy-side' | 'sell-side' | 'dual'
+    strategy: 'buy-side' | 'sell-side' | 'dual',
+    peFilter?: 'pe-backed' | 'not-pe-backed' | 'both'
   ): Promise<{ autoApproved: any[]; needsReview: any[] }> {
     const autoApproved = [];
     const needsReview = [];
@@ -447,16 +464,25 @@ Confidence levels:
 
         const companyConfidenceLevel = confidenceLevels[company.confidence] ?? 1;
 
-        const isPEBackedBuySide =
-          (company.ownershipType === 'PE-Backed') &&
-          strategy === 'buy-side';
+        const isPEBacked = company.ownershipType === 'PE-Backed';
+        // PE filter: hard reject/review based on user preference
+        const peAutoReject = peFilter === 'not-pe-backed' && isPEBacked;
+        const peManualReview = peFilter === 'pe-backed' && !isPEBacked;
+        // Legacy fallback: PE + buy-side still goes to manual review
+        const isPEBackedBuySide = isPEBacked && strategy === 'buy-side' && peFilter !== 'pe-backed';
 
         const revenue = this.parseRevenue(company.estimatedRevenue);
         const belowThresholdWithIP = revenue < 10000000 && company.ipUpside;
 
         let reviewReason = '';
+        let autoReject = false;
 
-        if (isPEBackedBuySide) {
+        if (peAutoReject) {
+          reviewReason = 'PE-backed company auto-rejected (PE filter: not PE-backed)';
+          autoReject = true;
+        } else if (peManualReview) {
+          reviewReason = 'Not PE-backed - requires manual review (PE filter: PE-backed only)';
+        } else if (isPEBackedBuySide) {
           reviewReason = 'PE-backed company - requires manual review for buy-side strategy (competitive auction risk)';
         } else if (belowThresholdWithIP) {
           reviewReason = `Below revenue threshold ($${(revenue/1000000).toFixed(1)}M) but significant IP upside detected - manual review recommended`;
@@ -469,13 +495,22 @@ Confidence levels:
         }
 
         const shouldAutoApprove =
+          !autoReject &&
+          !peManualReview &&
           company.score >= minScore &&
           companyConfidenceLevel >= requiredConfidenceLevel &&
           !isPEBackedBuySide &&
           !belowThresholdWithIP &&
           revenue <= 150000000;
 
-        if (shouldAutoApprove) {
+        if (autoReject) {
+          await storage.updateDiscoveryQueueItem(queueItem.id, {
+            approvalStatus: "rejected",
+            autoApprovalReason: reviewReason,
+          });
+          needsReview.push({ ...company, queueId: queueItem.id });
+          console.log(`[Agent] ✗ Auto-rejected: ${company.title} (${reviewReason})`);
+        } else if (shouldAutoApprove) {
           await storage.updateDiscoveryQueueItem(queueItem.id, {
             approvalStatus: "auto_approved",
             autoApprovalReason: `Score ${company.score}/10, ${company.confidence} confidence${company.ownershipType && company.ownershipType !== 'Unknown' ? ', ' + company.ownershipType : ''}`,

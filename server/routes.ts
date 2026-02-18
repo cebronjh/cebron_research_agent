@@ -378,6 +378,18 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
+  // Clear all search data (keeps configs)
+  app.delete("/api/data/clear-all", async (req, res) => {
+    try {
+      console.log("[API] Clearing all search data...");
+      await storage.clearAllData();
+      res.json({ message: "All search data cleared" });
+    } catch (error) {
+      console.error("Error clearing data:", error);
+      res.status(500).json({ error: "Failed to clear data" });
+    }
+  });
+
   // Health check - validates DB connectivity and API key configuration
   app.get("/api/health", async (req, res) => {
     const checks: Record<string, string> = {};

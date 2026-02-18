@@ -193,7 +193,8 @@ function AgentConfigCard() {
     revenueRange: "$20M-$100M",
     geographicFocus: "Midwest",
     strategy: "buy-side" as "buy-side" | "sell-side" | "dual",
-    
+    peFilter: "not-pe-backed" as "pe-backed" | "not-pe-backed" | "both",
+
     // Optional filters - now arrays for multi-select
     employeeCount: [] as string[],
     yearsInBusiness: [] as string[],
@@ -219,6 +220,7 @@ function AgentConfigCard() {
             revenueRange: config.revenueRange,
             geographicFocus: config.geographicFocus,
             strategy: config.strategy,
+            peFilter: config.peFilter,
             // Optional filters
             employeeCount: config.employeeCount.length > 0 ? config.employeeCount : undefined,
             yearsInBusiness: config.yearsInBusiness.length > 0 ? config.yearsInBusiness : undefined,
@@ -403,6 +405,33 @@ function AgentConfigCard() {
                 </SelectContent>
               </Select>
             </div>
+          </div>
+
+          {/* PE Ownership Filter */}
+          <div className="space-y-2">
+            <Label>PE Ownership Filter</Label>
+            <div className="flex gap-4">
+              {([
+                { value: "not-pe-backed", label: "Not PE-Backed" },
+                { value: "pe-backed", label: "PE-Backed Only" },
+                { value: "both", label: "Both" },
+              ] as const).map((option) => (
+                <label key={option.value} className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="peFilter"
+                    value={option.value}
+                    checked={config.peFilter === option.value}
+                    onChange={() => setConfig({ ...config, peFilter: option.value })}
+                    className="h-4 w-4"
+                  />
+                  <span className="text-sm">{option.label}</span>
+                </label>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Filter companies by private equity ownership status
+            </p>
           </div>
 
           <Separator />
