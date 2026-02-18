@@ -77,8 +77,12 @@ export class AgentOrchestrator {
 
       let researched = 0;
       for (const company of autoApproved) {
-        await this.researchCompany(company, workflow.id, config.searchCriteria.strategy || 'buy-side');
-        researched++;
+        try {
+          await this.researchCompany(company, workflow.id, config.searchCriteria.strategy || 'buy-side');
+          researched++;
+        } catch (error) {
+          console.error(`[Agent] Research failed for ${company.title}, continuing with next:`, error);
+        }
       }
 
       await storage.updateWorkflow(workflow.id, {
@@ -167,8 +171,13 @@ export class AgentOrchestrator {
     const scored = [];
 
     for (const company of companies) {
-      const score = await this.scoreCompany(company, criteria);
-      scored.push({ ...company, ...score, strategy: criteria.strategy });
+      try {
+        const score = await this.scoreCompany(company, criteria);
+        scored.push({ ...company, ...score, strategy: criteria.strategy });
+        console.log(`[Agent] Scored ${company.title}: ${score.score}/10 (${score.confidence})`);
+      } catch (error) {
+        console.error(`[Agent] Failed to score ${company.title}, skipping:`, error);
+      }
     }
 
     // Apply revenue filters
