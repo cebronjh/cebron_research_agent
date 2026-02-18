@@ -282,8 +282,8 @@ export default function LibraryPage() {
               </div>
             ) : fullReport?.report ? (
               <>
-                <div className="prose prose-sm max-w-none">
-                  <pre className="whitespace-pre-wrap font-sans text-sm">
+                <div className="max-w-none">
+                  <pre className="whitespace-pre-wrap font-sans text-sm bg-white text-black p-4 rounded-lg">
                     {fullReport.report}
                   </pre>
                 </div>
