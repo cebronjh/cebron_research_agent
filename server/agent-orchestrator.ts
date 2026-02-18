@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { enrichResearchWithApollo } from "./apollo-enrichment";
 import { addPatentIntelligence, evaluatePatentUpside } from "./uspto-patents";
 import { addFDAIntelligence } from "./fda-data";
-import { addSECIntelligence } from "./sec-edgar";
+
 import { USASpendingService } from "./usaspending";
 
 const anthropic = new Anthropic({
@@ -75,14 +75,29 @@ export class AgentOrchestrator {
         companiesManualReview: needsReview.length,
       });
 
+      // Research in parallel batches of 3 to reduce total workflow time
       let researched = 0;
-      for (const company of autoApproved) {
-        try {
-          await this.researchCompany(company, workflow.id, config.searchCriteria.strategy || 'buy-side');
-          researched++;
-        } catch (error) {
-          console.error(`[Agent] Research failed for ${company.title}, continuing with next:`, error);
+      const BATCH_SIZE = 3;
+      const strategy = config.searchCriteria.strategy || 'buy-side';
+
+      for (let i = 0; i < autoApproved.length; i += BATCH_SIZE) {
+        const batch = autoApproved.slice(i, i + BATCH_SIZE);
+        console.log(`[Agent] Research batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(autoApproved.length / BATCH_SIZE)}: ${batch.map(c => c.title).join(', ')}`);
+
+        const results = await Promise.allSettled(
+          batch.map(company => this.researchCompany(company, workflow.id, strategy))
+        );
+
+        for (let j = 0; j < results.length; j++) {
+          if (results[j].status === 'fulfilled') {
+            researched++;
+          } else {
+            console.error(`[Agent] Research failed for ${batch[j].title}:`, (results[j] as PromiseRejectedResult).reason);
+          }
         }
+
+        // Update progress after each batch
+        await storage.updateWorkflow(workflow.id, { companiesResearched: researched });
       }
 
       await storage.updateWorkflow(workflow.id, {
@@ -152,9 +167,23 @@ export class AgentOrchestrator {
       }
     }
     const deduped = Array.from(uniqueCompanies.values());
-    
-    console.log(`[Agent] Found ${data.results.length} companies, ${deduped.length} after deduplication`);
-    return deduped;
+
+    // Cross-run deduplication: skip companies already in discovery queue
+    const { storage } = await import("./storage");
+    const newCompanies = [];
+    let skippedCount = 0;
+    for (const company of deduped) {
+      const existing = await storage.findExistingCompany(company.title, company.url);
+      if (existing) {
+        skippedCount++;
+        console.log(`[Agent] Skipping ${company.title} - already in queue (ID: ${existing.id}, status: ${existing.approvalStatus})`);
+      } else {
+        newCompanies.push(company);
+      }
+    }
+
+    console.log(`[Agent] Found ${data.results.length} companies, ${deduped.length} after dedup, ${newCompanies.length} new (${skippedCount} already known)`);
+    return newCompanies;
   }
 
   private buildExaQuery(criteria: SearchCriteria): string {
@@ -287,14 +316,48 @@ Confidence levels:
     }
 
     jsonText = jsonText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-    const data = JSON.parse(jsonText);
+
+    // Extract JSON object even if surrounded by extra text
+    const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      console.error(`[Agent] Could not find JSON in Claude response for ${company.title}:`, jsonText.substring(0, 200));
+      return {
+        score: 5,
+        confidence: "Low",
+        reasoning: "Failed to parse scoring response",
+        estimatedRevenue: "",
+        industryMatch: false,
+        industry: criteria.industry || "Unknown",
+        geographicFocus: criteria.geographicFocus || "",
+        ownershipType: "Unknown",
+        ownershipNotes: "",
+      };
+    }
+
+    let data;
+    try {
+      data = JSON.parse(jsonMatch[0]);
+    } catch (parseError) {
+      console.error(`[Agent] JSON parse error for ${company.title}:`, parseError, jsonMatch[0].substring(0, 200));
+      return {
+        score: 5,
+        confidence: "Low",
+        reasoning: "Failed to parse scoring response",
+        estimatedRevenue: "",
+        industryMatch: false,
+        industry: criteria.industry || "Unknown",
+        geographicFocus: criteria.geographicFocus || "",
+        ownershipType: "Unknown",
+        ownershipNotes: "",
+      };
+    }
 
     return {
-      score: data.score,
-      confidence: data.confidence,
-      reasoning: data.reasoning,
-      estimatedRevenue: data.estimatedRevenue,
-      industryMatch: data.industryMatch,
+      score: data.score ?? 5,
+      confidence: data.confidence ?? "Low",
+      reasoning: data.reasoning ?? "",
+      estimatedRevenue: data.estimatedRevenue ?? "",
+      industryMatch: data.industryMatch ?? false,
       industry: data.industry || criteria.industry,
       geographicFocus: data.geographicFocus || criteria.geographicFocus,
       ownershipType: data.ownershipType || 'Unknown',
@@ -518,10 +581,30 @@ Create a comprehensive M&A research report with these sections:
 5. Competitive Landscape
 6. Management Team
 7. Growth Indicators
-8. Decision-Maker Contacts
+8. Key Contacts & Decision-Maker Intelligence
 9. Risks & Diligence Priorities
 10. Valuation Framework
 11. Next Steps
+
+IMPORTANT for Section 8 (Key Contacts & Decision-Maker Intelligence):
+Find as many key decision-makers as possible. For each person, use this exact format:
+**[Full Name]** - [Their Title]
+
+Prioritize finding these roles:
+- Founder / Co-Founder
+- Owner / Co-Owner
+- CEO / President
+- COO (Chief Operating Officer)
+- CFO (Chief Financial Officer)
+- VP of Business Development / VP of Sales
+- General Manager / Managing Director
+
+For each contact found, include:
+- Their LinkedIn profile URL if available
+- How long they've been in the role (if findable)
+- Any relevant background (prior companies, board seats)
+
+Search thoroughly - check the company website's "About Us" / "Team" / "Leadership" pages, LinkedIn company page, press releases, and news articles to find ALL key people.
 
 Use web search to find current information.`;
 
@@ -583,12 +666,7 @@ Use web search to find current information.`;
       console.error("[Agent] Patent intelligence failed:", error);
     }
 
-    try {
-      enhancedReport = await addSECIntelligence(companyName, enhancedReport, strategy);
-      console.log(`[Agent] ✓ Added SEC EDGAR intelligence`);
-    } catch (error) {
-      console.error("[Agent] SEC intelligence failed:", error);
-    }
+    // SEC EDGAR removed - stub that returned empty data, not useful for small private companies
 
     try {
       const usaSpendingService = new USASpendingService();

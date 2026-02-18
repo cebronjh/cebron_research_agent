@@ -1,5 +1,5 @@
 import { drizzle } from "drizzle-orm/node-postgres";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, or, ilike } from "drizzle-orm";
 import pg from "pg";
 import * as schema from "../drizzle/schema";
 
@@ -194,6 +194,19 @@ class Storage {
       .update(schema.agentConfigurations)
       .set(data)
       .where(eq(schema.agentConfigurations.id, id));
+  }
+
+  async findExistingCompany(companyName: string, websiteUrl?: string): Promise<any | null> {
+    const conditions = [ilike(schema.discoveryQueue.companyName, companyName)];
+    if (websiteUrl) {
+      conditions.push(eq(schema.discoveryQueue.websiteUrl, websiteUrl));
+    }
+    const result = await db
+      .select()
+      .from(schema.discoveryQueue)
+      .where(or(...conditions))
+      .limit(1);
+    return result[0] || null;
   }
 }
 

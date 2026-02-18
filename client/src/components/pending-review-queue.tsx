@@ -12,7 +12,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useToast } from "@/hooks/use-toast";
+import { useToast } from "@/components/ui/use-toast";
 
 interface PendingCompany {
   id: number;
@@ -35,12 +35,12 @@ export function PendingReviewQueue() {
   const [processingId, setProcessingId] = useState<number | null>(null);
 
   const { data: pendingCompanies = [], isLoading } = useQuery({
-    queryKey: ["/api/agent/approvals/pending"],
+    queryKey: ["/api/discovery-queue/pending"],
   });
 
   const approveMutation = useMutation({
     mutationFn: async (id: number) => {
-      const response = await fetch(`/api/agent/approvals/${id}/approve`, {
+      const response = await fetch(`/api/discovery-queue/${id}/approve`, {
         method: "POST",
       });
       if (!response.ok) throw new Error("Failed to approve");
@@ -51,8 +51,8 @@ export function PendingReviewQueue() {
         title: "Company Approved",
         description: data.message || "Research has been started",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/agent/approvals/pending"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/agent/workflows"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/discovery-queue/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
       setProcessingId(null);
     },
     onError: () => {
@@ -67,7 +67,7 @@ export function PendingReviewQueue() {
 
   const rejectMutation = useMutation({
     mutationFn: async (id: number) => {
-      const response = await fetch(`/api/agent/approvals/${id}/reject`, {
+      const response = await fetch(`/api/discovery-queue/${id}/reject`, {
         method: "POST",
       });
       if (!response.ok) throw new Error("Failed to reject");
@@ -78,7 +78,7 @@ export function PendingReviewQueue() {
         title: "Company Rejected",
         description: "The company has been removed from the queue",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/agent/approvals/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/discovery-queue/pending"] });
       setProcessingId(null);
     },
     onError: () => {

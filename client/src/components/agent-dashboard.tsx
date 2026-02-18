@@ -40,12 +40,12 @@ export function AgentDashboard() {
   
   // Fetch active workflows
   const { data: workflows } = useQuery({
-    queryKey: ["/api/agent/workflows"],
+    queryKey: ["/api/workflows"],
   });
   
   // Fetch pending approvals count
   const { data: pendingApprovals } = useQuery({
-    queryKey: ["/api/agent/approvals/pending"],
+    queryKey: ["/api/discovery-queue/pending"],
   });
 
   const pendingCount = pendingApprovals?.length || 0;
@@ -208,7 +208,7 @@ function AgentConfigCard() {
 
   const saveConfig = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/agent/config", {
+      const res = await fetch("/api/agent-configs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -238,7 +238,7 @@ function AgentConfigCard() {
     },
     onSuccess: (data) => {
       setSavedConfigId(data.id);
-      queryClient.invalidateQueries({ queryKey: ["/api/agent/workflows"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
       toast({
         title: "Configuration saved",
         description: `Configuration "${config.name}" has been saved successfully.`,
@@ -258,7 +258,7 @@ function AgentConfigCard() {
       // First, save the config if not already saved
       let configId = savedConfigId;
       if (!configId) {
-        const saveRes = await fetch("/api/agent/config", {
+        const saveRes = await fetch("/api/agent-configs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -289,16 +289,15 @@ function AgentConfigCard() {
       }
       
       // Now run with the saved config ID
-      const res = await fetch("/api/agent/run", {
+      const res = await fetch(`/api/discovery/run/${configId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ configId }),
       });
       if (!res.ok) throw new Error("Failed to start discovery");
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/agent/workflows"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
       toast({
         title: "Discovery started",
         description: "The agent is now searching for companies. Check back in a few minutes for results.",
