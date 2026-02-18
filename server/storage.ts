@@ -196,6 +196,14 @@ class Storage {
       .where(eq(schema.agentConfigurations.id, id));
   }
 
+  async getRunningWorkflows() {
+    const result = await db
+      .select()
+      .from(schema.agentWorkflows)
+      .where(eq(schema.agentWorkflows.status, 'running'));
+    return result;
+  }
+
   async findExistingCompany(companyName: string, websiteUrl?: string): Promise<any | null> {
     const conditions = [ilike(schema.discoveryQueue.companyName, companyName)];
     if (websiteUrl) {

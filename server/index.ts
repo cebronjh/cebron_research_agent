@@ -1,6 +1,7 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import { startScheduler } from "./scheduler";
 
 const app = express();
 app.use(express.json());
@@ -61,5 +62,8 @@ app.use((req, res, next) => {
   const PORT = process.env.PORT || 5000;
   server.listen(PORT, "0.0.0.0", () => {
     log(`Server running on port ${PORT}`);
+    startScheduler().catch((err) =>
+      console.error('[Scheduler] Failed to start:', err)
+    );
   });
 })();
