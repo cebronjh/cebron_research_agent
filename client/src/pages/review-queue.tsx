@@ -26,41 +26,106 @@ import {
   Filter,
   Clock,
   TrendingUp,
+  CheckSquare,
+  Square,
 } from "lucide-react";
+import { useToast } from "@/components/ui/use-toast";
 
 export default function ReviewQueuePage() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [filterIndustry, setFilterIndustry] = useState<string>("all");
   const [filterConfidence, setFilterConfidence] = useState<string>("all");
   const [sortBy, setSortBy] = useState<string>("score");
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
   const { data: companies, isLoading } = useQuery({
-    queryKey: ["/api/agent/approvals/pending"],
+    queryKey: ["/api/discovery-queue/pending"],
   });
 
   const approveCompany = useMutation({
     mutationFn: async (companyId: number) => {
-      const res = await fetch(`/api/agent/approvals/${companyId}/approve`, {
+      const res = await fetch(`/api/discovery-queue/${companyId}/approve`, {
         method: "POST",
       });
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/agent/approvals/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/discovery-queue/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
     },
   });
 
   const rejectCompany = useMutation({
     mutationFn: async (companyId: number) => {
-      const res = await fetch(`/api/agent/approvals/${companyId}/reject`, {
+      const res = await fetch(`/api/discovery-queue/${companyId}/reject`, {
         method: "POST",
       });
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/agent/approvals/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/discovery-queue/pending"] });
     },
   });
+
+  const bulkApprove = useMutation({
+    mutationFn: async (ids: number[]) => {
+      const res = await fetch("/api/discovery-queue/bulk-approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      if (!res.ok) throw new Error("Failed to bulk approve");
+      return res.json();
+    },
+    onSuccess: (data) => {
+      toast({ title: "Bulk Approved", description: data.message });
+      setSelectedIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ["/api/discovery-queue/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Bulk approve failed", variant: "destructive" });
+    },
+  });
+
+  const bulkReject = useMutation({
+    mutationFn: async (ids: number[]) => {
+      const res = await fetch("/api/discovery-queue/bulk-reject", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      if (!res.ok) throw new Error("Failed to bulk reject");
+      return res.json();
+    },
+    onSuccess: (data) => {
+      toast({ title: "Bulk Rejected", description: data.message });
+      setSelectedIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ["/api/discovery-queue/pending"] });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Bulk reject failed", variant: "destructive" });
+    },
+  });
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (!filteredCompanies) return;
+    if (selectedIds.size === filteredCompanies.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredCompanies.map((c: any) => c.id)));
+    }
+  };
 
   const filteredCompanies = companies
     ?.filter((c: any) => {
@@ -99,10 +164,37 @@ export default function ReviewQueuePage() {
                 </p>
               </div>
             </div>
-            <Badge variant="secondary" className="text-lg px-4 py-2">
-              <Clock className="h-4 w-4 mr-2" />
-              {filteredCompanies?.length || 0} Pending
-            </Badge>
+            <div className="flex items-center gap-3">
+              {selectedIds.size > 0 && (
+                <>
+                  <Badge variant="outline" className="text-sm px-3 py-1">
+                    {selectedIds.size} selected
+                  </Badge>
+                  <Button
+                    size="sm"
+                    onClick={() => bulkApprove.mutate(Array.from(selectedIds))}
+                    disabled={bulkApprove.isPending}
+                    className="bg-green-600 hover:bg-green-700"
+                  >
+                    <Check className="h-4 w-4 mr-1" />
+                    {bulkApprove.isPending ? "Approving..." : "Approve Selected"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => bulkReject.mutate(Array.from(selectedIds))}
+                    disabled={bulkReject.isPending}
+                  >
+                    <X className="h-4 w-4 mr-1" />
+                    {bulkReject.isPending ? "Rejecting..." : "Reject Selected"}
+                  </Button>
+                </>
+              )}
+              <Badge variant="secondary" className="text-lg px-4 py-2">
+                <Clock className="h-4 w-4 mr-2" />
+                {filteredCompanies?.length || 0} Pending
+              </Badge>
+            </div>
           </div>
         </div>
       </header>
@@ -172,6 +264,21 @@ export default function ReviewQueuePage() {
           </div>
         ) : filteredCompanies && filteredCompanies.length > 0 ? (
           <div className="space-y-4">
+            <div className="flex items-center gap-2 px-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={toggleSelectAll}
+                className="text-muted-foreground"
+              >
+                {selectedIds.size === filteredCompanies.length ? (
+                  <CheckSquare className="h-4 w-4 mr-2" />
+                ) : (
+                  <Square className="h-4 w-4 mr-2" />
+                )}
+                {selectedIds.size === filteredCompanies.length ? "Deselect All" : "Select All"}
+              </Button>
+            </div>
             {filteredCompanies.map((company: any) => (
               <CompanyReviewCard
                 key={company.id}
@@ -180,6 +287,8 @@ export default function ReviewQueuePage() {
                 onReject={() => rejectCompany.mutate(company.id)}
                 isApproving={approveCompany.isPending}
                 isRejecting={rejectCompany.isPending}
+                isSelected={selectedIds.has(company.id)}
+                onToggleSelect={() => toggleSelect(company.id)}
               />
             ))}
           </div>
@@ -205,12 +314,16 @@ function CompanyReviewCard({
   onReject,
   isApproving,
   isRejecting,
+  isSelected,
+  onToggleSelect,
 }: {
   company: any;
   onApprove: () => void;
   onReject: () => void;
   isApproving: boolean;
   isRejecting: boolean;
+  isSelected: boolean;
+  onToggleSelect: () => void;
 }) {
   const getScoreColor = (score: number) => {
     if (score >= 8) return "bg-green-500";
@@ -232,10 +345,21 @@ function CompanyReviewCard({
   };
 
   return (
-    <Card className="hover:shadow-md transition-shadow">
+    <Card className={`hover:shadow-md transition-shadow ${isSelected ? "ring-2 ring-blue-500" : ""}`}>
       <CardHeader>
         <div className="flex items-start justify-between">
-          <div className="flex-1">
+          <div className="flex items-start gap-3 flex-1">
+            <button
+              onClick={onToggleSelect}
+              className="mt-1 text-muted-foreground hover:text-foreground"
+            >
+              {isSelected ? (
+                <CheckSquare className="h-5 w-5 text-blue-500" />
+              ) : (
+                <Square className="h-5 w-5" />
+              )}
+            </button>
+            <div className="flex-1">
             <div className="flex items-center gap-3 mb-2">
               <CardTitle className="text-xl">{company.companyName}</CardTitle>
               <div className={`h-10 w-10 rounded-full ${getScoreColor(company.agentScore)} flex items-center justify-center text-white font-bold`}>
@@ -245,6 +369,7 @@ function CompanyReviewCard({
             {company.websiteUrl && (
               <p className="text-sm text-muted-foreground">{company.websiteUrl}</p>
             )}
+            </div>
           </div>
         </div>
       </CardHeader>

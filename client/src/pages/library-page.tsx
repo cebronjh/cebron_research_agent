@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
 import {
   Card,
@@ -24,6 +24,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import { Separator } from "@/components/ui/separator";
 import {
   BookOpen,
   ArrowLeft,
@@ -38,8 +40,16 @@ import {
   Folder,
   FileText,
   X,
+  Mail,
+  Send,
+  Edit2,
+  CheckCircle,
+  Loader2,
+  Copy,
+  MessageSquare,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useToast } from "@/components/ui/use-toast";
 
 type Folder = {
   id: string;
@@ -242,8 +252,8 @@ export default function LibraryPage() {
               <DialogTitle className="text-2xl">
                 {fullReport?.companyName || "Loading..."}
               </DialogTitle>
-              <Button 
-                variant="ghost" 
+              <Button
+                variant="ghost"
                 size="icon"
                 onClick={() => setSelectedReportId(null)}
               >
@@ -252,9 +262,9 @@ export default function LibraryPage() {
             </div>
             {fullReport?.websiteUrl && (
               <DialogDescription>
-                <a 
-                  href={fullReport.websiteUrl} 
-                  target="_blank" 
+                <a
+                  href={fullReport.websiteUrl}
+                  target="_blank"
                   rel="noopener noreferrer"
                   className="text-primary hover:underline flex items-center gap-1"
                 >
@@ -264,18 +274,24 @@ export default function LibraryPage() {
               </DialogDescription>
             )}
           </DialogHeader>
-          
+
           <ScrollArea className="max-h-[70vh] pr-4">
             {isLoadingReport ? (
               <div className="py-12 text-center">
                 <p className="text-muted-foreground">Loading report...</p>
               </div>
             ) : fullReport?.report ? (
-              <div className="prose prose-sm max-w-none">
-                <pre className="whitespace-pre-wrap font-sans text-sm">
-                  {fullReport.report}
-                </pre>
-              </div>
+              <>
+                <div className="prose prose-sm max-w-none">
+                  <pre className="whitespace-pre-wrap font-sans text-sm">
+                    {fullReport.report}
+                  </pre>
+                </div>
+                <Separator className="my-6" />
+                {selectedReportId && (
+                  <OutreachSection reportId={selectedReportId} />
+                )}
+              </>
             ) : (
               <div className="py-12 text-center">
                 <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
@@ -287,6 +303,201 @@ export default function LibraryPage() {
           </ScrollArea>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function OutreachSection({ reportId }: { reportId: number }) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editText, setEditText] = useState("");
+
+  const { data: outreachMessages = [], isLoading } = useQuery({
+    queryKey: [`/api/reports/${reportId}/outreach`],
+  });
+
+  const generateMutation = useMutation({
+    mutationFn: async (strategy: string) => {
+      const res = await fetch(`/api/reports/${reportId}/outreach`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ strategy }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to generate outreach");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Outreach Generated", description: "New outreach message created" });
+      queryClient.invalidateQueries({ queryKey: [`/api/reports/${reportId}/outreach`] });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: async ({ id, editedMessage }: { id: number; editedMessage: string }) => {
+      const res = await fetch(`/api/outreach/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ editedMessage }),
+      });
+      if (!res.ok) throw new Error("Failed to save");
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Saved", description: "Outreach message updated" });
+      setEditingId(null);
+      queryClient.invalidateQueries({ queryKey: [`/api/reports/${reportId}/outreach`] });
+    },
+  });
+
+  const markSentMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/outreach/${id}/sent`, { method: "POST" });
+      if (!res.ok) throw new Error("Failed to mark as sent");
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Marked as Sent" });
+      queryClient.invalidateQueries({ queryKey: [`/api/reports/${reportId}/outreach`] });
+    },
+  });
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    toast({ title: "Copied to clipboard" });
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-semibold flex items-center gap-2">
+          <Mail className="h-5 w-5" />
+          Outreach Messages
+        </h3>
+        <Button
+          size="sm"
+          onClick={() => generateMutation.mutate("buy-side")}
+          disabled={generateMutation.isPending}
+        >
+          {generateMutation.isPending ? (
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+          ) : (
+            <Plus className="h-4 w-4 mr-2" />
+          )}
+          {generateMutation.isPending ? "Generating..." : "Generate Outreach"}
+        </Button>
+      </div>
+
+      {isLoading && (
+        <p className="text-sm text-muted-foreground">Loading outreach messages...</p>
+      )}
+
+      {outreachMessages.length === 0 && !isLoading && (
+        <div className="text-center py-6 bg-gray-50 rounded-lg border border-dashed">
+          <MessageSquare className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
+          <p className="text-sm text-muted-foreground">
+            No outreach messages yet. Generate one to get started.
+          </p>
+        </div>
+      )}
+
+      {outreachMessages.map((msg: any) => (
+        <Card key={msg.id} className="border">
+          <CardContent className="pt-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                {msg.strategy && (
+                  <Badge variant="outline">{msg.strategy}</Badge>
+                )}
+                {msg.wasSent && (
+                  <Badge className="bg-green-500/10 text-green-700">
+                    <CheckCircle className="h-3 w-3 mr-1" />
+                    Sent
+                  </Badge>
+                )}
+                {msg.wasEdited && (
+                  <Badge variant="secondary">Edited</Badge>
+                )}
+              </div>
+              <span className="text-xs text-muted-foreground">
+                {new Date(msg.createdAt).toLocaleDateString()}
+              </span>
+            </div>
+
+            {editingId === msg.id ? (
+              <div className="space-y-2">
+                <Textarea
+                  value={editText}
+                  onChange={(e) => setEditText(e.target.value)}
+                  rows={10}
+                  className="text-sm"
+                />
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => saveMutation.mutate({ id: msg.id, editedMessage: editText })}
+                    disabled={saveMutation.isPending}
+                  >
+                    Save
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setEditingId(null)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <pre className="whitespace-pre-wrap font-sans text-sm bg-gray-50 p-3 rounded-lg border">
+                {msg.editedMessage || msg.originalMessage}
+              </pre>
+            )}
+
+            {editingId !== msg.id && (
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => copyToClipboard(msg.editedMessage || msg.originalMessage)}
+                >
+                  <Copy className="h-3 w-3 mr-1" />
+                  Copy
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setEditingId(msg.id);
+                    setEditText(msg.editedMessage || msg.originalMessage);
+                  }}
+                >
+                  <Edit2 className="h-3 w-3 mr-1" />
+                  Edit
+                </Button>
+                {!msg.wasSent && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => markSentMutation.mutate(msg.id)}
+                    disabled={markSentMutation.isPending}
+                  >
+                    <Send className="h-3 w-3 mr-1" />
+                    Mark Sent
+                  </Button>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      ))}
     </div>
   );
 }
