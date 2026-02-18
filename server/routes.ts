@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage, db } from "./storage";
 import { agentOrchestrator } from "./agent-orchestrator";
+import { weeklyIntelligenceEngine } from "./weekly-intelligence-engine";
 import { eq, desc } from "drizzle-orm";
 import * as schema from "../drizzle/schema";
 
@@ -585,6 +586,24 @@ export function registerRoutes(app: Express): Server {
     } catch (error) {
       console.error("Error fetching intelligence archive:", error);
       res.status(500).json({ error: "Failed to fetch archive" });
+    }
+  });
+
+  // Trigger weekly intelligence scan manually
+  app.post("/api/weekly-intelligence/run", async (req, res) => {
+    try {
+      console.log("[API] Starting weekly intelligence scan...");
+      weeklyIntelligenceEngine.runWeeklyScan()
+        .then(trendId => {
+          console.log(`[API] Weekly intelligence scan completed (trend ID: ${trendId})`);
+        })
+        .catch(error => {
+          console.error("[API] Weekly intelligence scan failed:", error);
+        });
+      res.json({ message: "Weekly intelligence scan started" });
+    } catch (error) {
+      console.error("Error starting weekly intelligence:", error);
+      res.status(500).json({ error: "Failed to start weekly intelligence scan" });
     }
   });
 

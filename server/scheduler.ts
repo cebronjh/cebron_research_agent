@@ -2,6 +2,7 @@
 
 import cron from 'node-cron';
 import { agentOrchestrator } from './agent-orchestrator';
+import { weeklyIntelligenceEngine } from './weekly-intelligence-engine';
 import { storage } from './storage';
 
 const activeTasks: ReturnType<typeof cron.schedule>[] = [];
@@ -86,6 +87,20 @@ export async function startScheduler() {
   console.log('[Scheduler] Initializing...');
   await cleanupOrphanedWorkflows();
   await setupCronJobs();
+
+  // Weekly Intelligence: every Monday at 12 AM (midnight)
+  const wiTask = cron.schedule('0 0 * * 1', async () => {
+    console.log('[Scheduler] Monday cron: starting Weekly Intelligence scan');
+    try {
+      const trendId = await weeklyIntelligenceEngine.runWeeklyScan();
+      console.log(`[Scheduler] Weekly Intelligence scan completed (trend ID: ${trendId})`);
+    } catch (error) {
+      console.error('[Scheduler] Weekly Intelligence scan failed:', error);
+    }
+  });
+  activeTasks.push(wiTask);
+  console.log('[Scheduler] Weekly Intelligence cron scheduled (Monday 12 AM)');
+
   console.log('[Scheduler] Ready');
 }
 
