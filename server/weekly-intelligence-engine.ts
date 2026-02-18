@@ -503,77 +503,171 @@ Return ONLY valid JSON:
 
     console.log(`[WI]   Classified ${contacts.length} companies, ${peBackedCount} PE-backed filtered`);
 
-    // Apollo enrichment (optional)
-    const apolloApiKey = process.env.APOLLO_API_KEY;
-    if (!apolloApiKey) {
-      console.log(`[WI]   No Apollo API key — skipping contact enrichment`);
-      return;
-    }
-
+    // Contact enrichment: Apollo first, then Exa + Claude fallback
     const nonPeContacts = await db
       .select()
       .from(schema.targetContacts)
       .where(eq(schema.targetContacts.sectorId, sectorId));
 
     const toEnrich = nonPeContacts.filter(c => c.ownershipType !== "PE-Backed");
+    const apolloApiKey = process.env.APOLLO_API_KEY;
+    let apolloSuccesses = 0;
+    let exaFallbacks = 0;
 
     for (const contact of toEnrich) {
-      try {
-        // Extract domain from company website for Apollo org search
-        let domain = '';
+      let enriched = false;
+
+      // Step A: Try Apollo (if API key exists)
+      if (apolloApiKey) {
         try {
-          domain = new URL(contact.companyWebsite || '').hostname.replace('www.', '');
-        } catch { /* no valid URL */ }
+          let domain = '';
+          try {
+            domain = new URL(contact.companyWebsite || '').hostname.replace('www.', '');
+          } catch { /* no valid URL */ }
 
-        // Search Apollo by organization name + leadership titles (not person name)
-        const apolloResponse = await fetch('https://api.apollo.io/v1/mixed_people/search', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Cache-Control': 'no-cache',
-            'X-Api-Key': apolloApiKey,
-          },
-          body: JSON.stringify({
-            organization_names: [contact.companyName],
-            q_organization_domains: domain || undefined,
-            person_titles: ["CEO", "Founder", "Owner", "President", "Managing Director"],
-            per_page: 1,
-          }),
-        });
+          const apolloResponse = await fetch('https://api.apollo.io/v1/people/search', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-cache',
+              'X-Api-Key': apolloApiKey,
+            },
+            body: JSON.stringify({
+              organization_names: [contact.companyName],
+              q_organization_domains: domain || undefined,
+              person_titles: ["CEO", "Founder", "Owner", "President"],
+              per_page: 1,
+            }),
+          });
 
-        if (!apolloResponse.ok) {
-          throw new Error(`Apollo API error: ${apolloResponse.statusText}`);
+          if (apolloResponse.ok) {
+            const apolloData = await apolloResponse.json();
+            const person = apolloData.people?.[0];
+            if (person && (person.email || person.name)) {
+              await db
+                .update(schema.targetContacts)
+                .set({
+                  contactName: person.name || null,
+                  contactEmail: person.email || null,
+                  contactPhone: person.phone_numbers?.[0]?.sanitized_number || null,
+                  enrichmentStatus: "enriched",
+                })
+                .where(eq(schema.targetContacts.id, contact.id));
+              enriched = true;
+              apolloSuccesses++;
+            }
+          }
+        } catch (error: any) {
+          console.warn(`[WI]   Apollo failed for ${contact.companyName}: ${error?.message}`);
         }
+      }
 
-        const apolloData = await apolloResponse.json();
-        const person = apolloData.people?.[0];
-
-        if (person && (person.email || person.name)) {
+      // Step B: Exa + Claude fallback if Apollo didn't enrich
+      if (!enriched) {
+        try {
+          const enrichResult = await this.enrichContactViaExa(contact.companyName, contact.companyWebsite);
+          if (enrichResult) {
+            await db
+              .update(schema.targetContacts)
+              .set({
+                contactName: enrichResult.contactName || null,
+                contactEmail: enrichResult.contactEmail || null,
+                enrichmentStatus: enrichResult.contactName ? "enriched" : "no_results",
+              })
+              .where(eq(schema.targetContacts.id, contact.id));
+            if (enrichResult.contactName) exaFallbacks++;
+          } else {
+            await db
+              .update(schema.targetContacts)
+              .set({ enrichmentStatus: "no_results" })
+              .where(eq(schema.targetContacts.id, contact.id));
+          }
+        } catch (error: any) {
+          console.warn(`[WI]   Exa fallback failed for ${contact.companyName}: ${error?.message}`);
           await db
             .update(schema.targetContacts)
-            .set({
-              contactName: person.name || null,
-              contactEmail: person.email || null,
-              contactPhone: person.phone_numbers?.[0]?.sanitized_number || null,
-              enrichmentStatus: "enriched",
-            })
-            .where(eq(schema.targetContacts.id, contact.id));
-        } else {
-          await db
-            .update(schema.targetContacts)
-            .set({ enrichmentStatus: "no_results" })
+            .set({ enrichmentStatus: "failed" })
             .where(eq(schema.targetContacts.id, contact.id));
         }
-      } catch (error: any) {
-        console.error(`[WI]   Apollo enrichment failed for ${contact.companyName}:`, error?.message);
-        await db
-          .update(schema.targetContacts)
-          .set({ enrichmentStatus: "failed" })
-          .where(eq(schema.targetContacts.id, contact.id));
       }
     }
 
-    console.log(`[WI]   Apollo enrichment attempted for ${toEnrich.length} non-PE contacts`);
+    console.log(`[WI]   Enrichment complete: ${apolloSuccesses} via Apollo, ${exaFallbacks} via Exa, ${toEnrich.length - apolloSuccesses - exaFallbacks} unresolved`);
+  }
+
+  private async enrichContactViaExa(
+    companyName: string,
+    companyWebsite: string | null
+  ): Promise<{ contactName: string | null; contactEmail: string | null } | null> {
+    // Search Exa for leadership info
+    const query = `"${companyName}" CEO OR founder OR owner OR president leadership team`;
+
+    const response = await withRetry(() => fetch('https://api.exa.ai/search', {
+      method: 'POST',
+      headers: {
+        'x-api-key': process.env.EXA_API_KEY || '',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query,
+        numResults: 3,
+        type: 'neural',
+        useAutoprompt: false,
+        contents: {
+          text: { maxCharacters: 1500 },
+        },
+      }),
+    }), `Exa contact search for ${companyName}`);
+
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    if (!data.results || data.results.length === 0) return null;
+
+    // Combine search result text for Claude extraction
+    const searchText = data.results
+      .map((r: any) => `Source: ${r.url}\n${r.text || ''}`)
+      .join('\n---\n')
+      .substring(0, 3000);
+
+    const prompt = `From these search results about "${companyName}", extract the CEO, founder, or owner's contact information.
+
+SEARCH RESULTS:
+${searchText}
+
+Return ONLY valid JSON:
+{
+  "contactName": "Full Name of CEO/Founder/Owner or null if not found",
+  "contactTitle": "Their title or null",
+  "contactEmail": "Their email or null if not found"
+}
+
+Only return real information you can find in the text. Do NOT make up names or emails.`;
+
+    const claudeResponse = await withRetry(() => anthropic.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 500,
+      messages: [{ role: "user", content: prompt }],
+    }), `Claude contact extraction for ${companyName}`);
+
+    let jsonText = "";
+    for (const block of claudeResponse.content) {
+      if (block.type === "text") jsonText += block.text;
+    }
+
+    jsonText = jsonText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+    const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+
+    try {
+      const result = JSON.parse(jsonMatch[0]);
+      return {
+        contactName: result.contactName || null,
+        contactEmail: result.contactEmail || null,
+      };
+    } catch {
+      return null;
+    }
   }
 
   private async generateNewsletter(
