@@ -75,6 +75,50 @@ class Storage {
     return result;
   }
 
+  // Aliases used by routes.ts
+  async getAllAgentConfigs() {
+    const result = await db
+      .select()
+      .from(schema.agentConfigurations)
+      .orderBy(desc(schema.agentConfigurations.createdAt));
+    return result;
+  }
+
+  async createAgentConfig(config: any) {
+    return this.saveAgentConfig(config);
+  }
+
+  async deleteAgentConfig(id: number) {
+    await db
+      .delete(schema.agentConfigurations)
+      .where(eq(schema.agentConfigurations.id, id));
+  }
+
+  async getAllWorkflows() {
+    return this.getRecentWorkflows(20);
+  }
+
+  async getReports(filter?: { status?: string }) {
+    if (filter?.status) {
+      const result = await db
+        .select()
+        .from(schema.reports)
+        .where(eq(schema.reports.status, filter.status))
+        .orderBy(desc(schema.reports.createdAt));
+      return result;
+    }
+    return this.getAllReports();
+  }
+
+  async getReportById(id: number) {
+    const result = await db
+      .select()
+      .from(schema.reports)
+      .where(eq(schema.reports.id, id))
+      .limit(1);
+    return result[0];
+  }
+
   async getAllReports() {
     const result = await db
       .select()
