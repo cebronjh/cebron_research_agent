@@ -754,6 +754,57 @@ Use web search to find current information.`;
 
     return { qualityScore, contactsFound };
   }
+
+  async generateOutreach(reportId: number, strategy: string = 'buy-side'): Promise<any> {
+    const { storage } = await import("./storage");
+
+    const report = await storage.getReportById(reportId);
+    if (!report) throw new Error(`Report ${reportId} not found`);
+    if (!report.report) throw new Error(`Report ${reportId} has no content`);
+
+    console.log(`[Agent] Generating outreach for ${report.companyName} (${strategy})`);
+
+    const prompt = `Based on this M&A research report, write a personalized outreach email to the company's decision-makers.
+
+Company: ${report.companyName}
+Strategy: ${strategy}
+Industry: ${report.industry || 'Unknown'}
+
+Research Report (excerpt - first 3000 chars):
+${report.report.substring(0, 3000)}
+
+Write a professional, warm outreach email that:
+1. References something SPECIFIC about their company (recent achievement, market position, or growth)
+2. ${strategy === 'buy-side'
+  ? 'Positions the sender as a strategic acquirer interested in a confidential conversation about the company\'s future'
+  : 'Positions the sender as an advisor who can help them explore strategic options to maximize value'}
+3. Keeps the tone respectful and not pushy — this is a first touch
+4. Is concise (under 200 words)
+5. Includes a clear but soft call-to-action (coffee chat, brief call)
+
+Do NOT use generic M&A jargon. Make it feel personal and researched.
+Return ONLY the email body text, no subject line or headers.`;
+
+    const response = await withRetry(() => anthropic.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 2000,
+      messages: [{ role: "user", content: prompt }],
+    }), `Outreach generation for ${report.companyName}`);
+
+    let messageText = "";
+    for (const block of response.content) {
+      if (block.type === "text") messageText += block.text;
+    }
+
+    const outreach = await storage.createOutreach({
+      originalMessage: messageText.trim(),
+      reportId: report.id,
+      strategy,
+    });
+
+    console.log(`[Agent] ✓ Outreach generated for ${report.companyName} (ID: ${outreach.id})`);
+    return outreach;
+  }
 }
 
 export const agentOrchestrator = new AgentOrchestrator();

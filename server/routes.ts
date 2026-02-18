@@ -18,6 +18,19 @@ export function registerRoutes(app: Express): Server {
   // Create agent configuration
   app.post("/api/agent-configs", async (req, res) => {
     try {
+      const { name, searchCriteria, autoApprovalRules } = req.body;
+      if (!name || typeof name !== "string" || name.trim().length === 0) {
+        return res.status(400).json({ error: "name is required" });
+      }
+      if (!searchCriteria || typeof searchCriteria !== "object") {
+        return res.status(400).json({ error: "searchCriteria is required" });
+      }
+      if (!searchCriteria.query || typeof searchCriteria.query !== "string") {
+        return res.status(400).json({ error: "searchCriteria.query is required" });
+      }
+      if (!autoApprovalRules || typeof autoApprovalRules !== "object") {
+        return res.status(400).json({ error: "autoApprovalRules is required" });
+      }
       const config = await storage.createAgentConfig(req.body);
       res.json(config);
     } catch (error) {
@@ -54,6 +67,9 @@ export function registerRoutes(app: Express): Server {
   app.post("/api/discovery/run/:configId", async (req, res) => {
     try {
       const configId = parseInt(req.params.configId);
+      if (isNaN(configId)) {
+        return res.status(400).json({ error: "Invalid config ID" });
+      }
       console.log(`[API] Starting discovery workflow for config ${configId}`);
       
       // Run workflow asynchronously
@@ -214,6 +230,136 @@ export function registerRoutes(app: Express): Server {
     } catch (error) {
       console.error("Error fetching report:", error);
       res.status(500).json({ error: "Failed to fetch report" });
+    }
+  });
+
+  // Generate outreach message for a report
+  app.post("/api/reports/:id/outreach", async (req, res) => {
+    try {
+      const reportId = parseInt(req.params.id);
+      const strategy = req.body.strategy || "buy-side";
+      console.log(`[API] Generating outreach for report ${reportId} (strategy: ${strategy})`);
+
+      const outreach = await agentOrchestrator.generateOutreach(reportId, strategy);
+      res.json(outreach);
+    } catch (error: any) {
+      console.error("Error generating outreach:", error);
+      res.status(500).json({ error: error.message || "Failed to generate outreach" });
+    }
+  });
+
+  // Get outreach messages for a report
+  app.get("/api/reports/:id/outreach", async (req, res) => {
+    try {
+      const reportId = parseInt(req.params.id);
+      const outreach = await storage.getOutreachByReportId(reportId);
+      res.json(outreach);
+    } catch (error) {
+      console.error("Error fetching outreach:", error);
+      res.status(500).json({ error: "Failed to fetch outreach" });
+    }
+  });
+
+  // Update/edit an outreach message
+  app.put("/api/outreach/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { editedMessage } = req.body;
+      if (!editedMessage || typeof editedMessage !== "string") {
+        return res.status(400).json({ error: "editedMessage is required" });
+      }
+      const updated = await storage.updateOutreach(id, {
+        editedMessage,
+        wasEdited: true,
+      });
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating outreach:", error);
+      res.status(500).json({ error: "Failed to update outreach" });
+    }
+  });
+
+  // Mark outreach as sent
+  app.post("/api/outreach/:id/sent", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const updated = await storage.updateOutreach(id, {
+        wasSent: true,
+      });
+      res.json(updated);
+    } catch (error) {
+      console.error("Error marking outreach as sent:", error);
+      res.status(500).json({ error: "Failed to update outreach" });
+    }
+  });
+
+  // Record outreach response
+  app.post("/api/outreach/:id/response", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const updated = await storage.updateOutreach(id, {
+        gotResponse: req.body.gotResponse ?? true,
+      });
+      res.json(updated);
+    } catch (error) {
+      console.error("Error recording outreach response:", error);
+      res.status(500).json({ error: "Failed to update outreach" });
+    }
+  });
+
+  // Bulk approve companies
+  app.post("/api/discovery-queue/bulk-approve", async (req, res) => {
+    try {
+      const { ids } = req.body;
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: "ids array is required" });
+      }
+      console.log(`[API] Bulk approving ${ids.length} companies: ${ids.join(", ")}`);
+
+      // Approve all
+      for (const id of ids) {
+        await storage.updateDiscoveryQueueItem(id, {
+          approvalStatus: "auto_approved",
+          autoApprovalReason: "Bulk approved manually",
+          approvedAt: new Date(),
+        });
+      }
+
+      // Trigger research asynchronously for each
+      Promise.allSettled(
+        ids.map((id: number) => agentOrchestrator.researchCompanyById(id))
+      ).then(results => {
+        const succeeded = results.filter(r => r.status === "fulfilled").length;
+        const failed = results.filter(r => r.status === "rejected").length;
+        console.log(`[API] Bulk research complete: ${succeeded} succeeded, ${failed} failed`);
+      });
+
+      res.json({ message: `${ids.length} companies approved, research started` });
+    } catch (error) {
+      console.error("Error bulk approving:", error);
+      res.status(500).json({ error: "Failed to bulk approve" });
+    }
+  });
+
+  // Bulk reject companies
+  app.post("/api/discovery-queue/bulk-reject", async (req, res) => {
+    try {
+      const { ids } = req.body;
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: "ids array is required" });
+      }
+      console.log(`[API] Bulk rejecting ${ids.length} companies`);
+
+      for (const id of ids) {
+        await storage.updateDiscoveryQueueItem(id, {
+          approvalStatus: "rejected",
+        });
+      }
+
+      res.json({ message: `${ids.length} companies rejected` });
+    } catch (error) {
+      console.error("Error bulk rejecting:", error);
+      res.status(500).json({ error: "Failed to bulk reject" });
     }
   });
 

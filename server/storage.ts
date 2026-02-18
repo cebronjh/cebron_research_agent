@@ -208,6 +208,32 @@ class Storage {
       .limit(1);
     return result[0] || null;
   }
+
+  async createOutreach(data: any) {
+    const result = await db
+      .insert(schema.outreachStyles)
+      .values(data)
+      .returning();
+    return result[0];
+  }
+
+  async getOutreachByReportId(reportId: number) {
+    const result = await db
+      .select()
+      .from(schema.outreachStyles)
+      .where(eq(schema.outreachStyles.reportId, reportId))
+      .orderBy(desc(schema.outreachStyles.createdAt));
+    return result;
+  }
+
+  async updateOutreach(id: number, data: any) {
+    const result = await db
+      .update(schema.outreachStyles)
+      .set(data)
+      .where(eq(schema.outreachStyles.id, id))
+      .returning();
+    return result[0];
+  }
 }
 
 export const storage = new Storage();
