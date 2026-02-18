@@ -589,6 +589,23 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
+  // Clear weekly intelligence data (for re-runs)
+  app.delete("/api/weekly-intelligence/clear", async (req, res) => {
+    try {
+      console.log("[API] Clearing weekly intelligence data...");
+      // Delete in FK order: newsletters → contacts → sectors → trends
+      await db.delete(schema.sectorNewsletters);
+      await db.delete(schema.targetContacts);
+      await db.delete(schema.hotSectors);
+      await db.delete(schema.weeklyTrends);
+      console.log("[API] Weekly intelligence data cleared");
+      res.json({ message: "Weekly intelligence data cleared" });
+    } catch (error) {
+      console.error("Error clearing weekly intelligence data:", error);
+      res.status(500).json({ error: "Failed to clear weekly intelligence data" });
+    }
+  });
+
   // Trigger weekly intelligence scan manually
   app.post("/api/weekly-intelligence/run", async (req, res) => {
     try {

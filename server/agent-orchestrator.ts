@@ -191,6 +191,9 @@ export class AgentOrchestrator {
       return [];
     }
 
+    // Extract real company names from page titles using Claude
+    await this.extractCompanyNames(data.results);
+
     // Deduplicate by company name (case-insensitive)
     const uniqueCompanies = new Map();
     for (const company of data.results) {
@@ -236,6 +239,67 @@ export class AgentOrchestrator {
     }
 
     return parts.join(" ");
+  }
+
+  private async extractCompanyNames(companies: any[]): Promise<void> {
+    if (companies.length === 0) return;
+
+    // Process in batches of 15 to stay within Claude's context
+    const BATCH_SIZE = 15;
+    for (let i = 0; i < companies.length; i += BATCH_SIZE) {
+      const batch = companies.slice(i, i + BATCH_SIZE);
+      const companyList = batch
+        .map((c: any, idx: number) => `${idx + 1}. Page title: "${c.title}"\n   URL: ${c.url}\n   Text snippet: "${(c.text || '').substring(0, 150)}"`)
+        .join('\n');
+
+      const prompt = `Extract the actual company name from each search result below. The page titles are often article headlines, taglines, or page section names — NOT the company name.
+
+Look at the URL domain, the text content, and the page title to determine the real company name.
+
+Examples:
+- Page title "Tyber Medical Set to Acquire CatapultMD" → "Tyber Medical"
+- Page title "Celebrating 15 years of Think Company" → "Think Company"
+- Page title "Redefining Consulting" on URL thoughtlogic.com → "ThoughtLogic"
+
+SEARCH RESULTS:
+${companyList}
+
+Return ONLY valid JSON:
+{
+  "companies": [
+    { "index": 1, "name": "Actual Company Name" }
+  ]
+}`;
+
+      try {
+        const response = await withRetry(() => anthropic.messages.create({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 2000,
+          messages: [{ role: "user", content: prompt }],
+        }), `Claude company name extraction batch ${Math.floor(i / BATCH_SIZE) + 1}`);
+
+        let jsonText = "";
+        for (const block of response.content) {
+          if (block.type === "text") jsonText += block.text;
+        }
+
+        jsonText = jsonText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+        const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const data = JSON.parse(jsonMatch[0]);
+          const names = data.companies || [];
+          for (const entry of names) {
+            const idx = (entry.index || 0) - 1;
+            if (idx >= 0 && idx < batch.length && entry.name) {
+              console.log(`[Agent] Name cleanup: "${batch[idx].title}" → "${entry.name}"`);
+              batch[idx].title = entry.name;
+            }
+          }
+        }
+      } catch (error: any) {
+        console.warn(`[Agent] Company name extraction failed, using raw titles:`, error?.message);
+      }
+    }
   }
 
   private async scoreCompanies(companies: any[], criteria: SearchCriteria, workflowId?: number): Promise<any[]> {
