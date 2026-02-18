@@ -1,6 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { db } from "./db";
-import { discoveryQueue, reports } from "./db/schema";
+import { db, discoveryQueue, reports } from "../drizzle/schema";
 import { eq } from "drizzle-orm";
 import { enrichResearchWithApollo } from "./apollo-enrichment";
 import { addPatentIntelligence, evaluatePatentUpside } from "./uspto-patents";
