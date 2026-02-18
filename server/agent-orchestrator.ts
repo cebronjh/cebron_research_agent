@@ -5,8 +5,6 @@ import { enrichResearchWithApollo } from "./apollo-enrichment";
 import { addPatentIntelligence, evaluatePatentUpside } from "./uspto-patents";
 import { addFDAIntelligence } from "./fda-data";
 
-import { USASpendingService } from "./usaspending";
-
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
@@ -666,17 +664,8 @@ Use web search to find current information.`;
       console.error("[Agent] Patent intelligence failed:", error);
     }
 
-    // SEC EDGAR removed - stub that returned empty data, not useful for small private companies
-
-    try {
-      const usaSpendingService = new USASpendingService();
-      const govIntelligence = await usaSpendingService.getGovernmentContracts(companyName);
-      const govReport = usaSpendingService.formatForReport(govIntelligence, companyName);
-      enhancedReport += '\n\n' + govReport;
-      console.log(`[Agent] ✓ Added federal contract intelligence`);
-    } catch (error) {
-      console.error("[Agent] Government contract intelligence failed:", error);
-    }
+    // SEC EDGAR removed - stub returning empty data
+    // USASpending removed - rarely relevant for small private M&A targets
 
     if (
       industry.toLowerCase().includes("health") ||
