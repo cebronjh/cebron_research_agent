@@ -21,6 +21,8 @@ export const reports = pgTable("reports", {
   geographicFocus: text("geographic_focus"),
   report: text("report"),
   status: text("status"),
+  qualityScore: integer("quality_score"),
+  contactsFound: integer("contacts_found"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

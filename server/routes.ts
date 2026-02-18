@@ -217,9 +217,34 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  // Health check
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString() });
+  // Health check - validates DB connectivity and API key configuration
+  app.get("/api/health", async (req, res) => {
+    const checks: Record<string, string> = {};
+
+    // Check required API keys
+    checks.anthropic_key = process.env.ANTHROPIC_API_KEY ? "configured" : "MISSING";
+    checks.exa_key = process.env.EXA_API_KEY ? "configured" : "MISSING";
+    checks.apollo_key = process.env.APOLLO_API_KEY ? "configured" : "not configured (optional)";
+    checks.database_url = process.env.DATABASE_URL ? "configured" : "MISSING";
+
+    // Check DB connectivity
+    try {
+      await storage.getRecentWorkflows(1);
+      checks.database = "connected";
+    } catch (error) {
+      checks.database = "UNREACHABLE";
+    }
+
+    const hasCriticalIssue = checks.anthropic_key === "MISSING" ||
+      checks.exa_key === "MISSING" ||
+      checks.database_url === "MISSING" ||
+      checks.database === "UNREACHABLE";
+
+    res.status(hasCriticalIssue ? 503 : 200).json({
+      status: hasCriticalIssue ? "degraded" : "ok",
+      timestamp: new Date().toISOString(),
+      checks,
+    });
   });
 
   const httpServer = createServer(app);

@@ -9,6 +9,37 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  label: string,
+  maxRetries = 3,
+  baseDelayMs = 1000
+): Promise<T> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      const isRetryable =
+        error?.status === 429 ||
+        error?.status === 502 ||
+        error?.status === 503 ||
+        error?.message?.includes('ECONNRESET') ||
+        error?.message?.includes('ETIMEDOUT') ||
+        error?.message?.includes('overloaded');
+
+      if (!isRetryable || attempt === maxRetries) {
+        console.error(`[Retry] ${label} failed after ${attempt} attempt(s):`, error?.message || error);
+        throw error;
+      }
+
+      const delay = baseDelayMs * Math.pow(2, attempt - 1);
+      console.warn(`[Retry] ${label} attempt ${attempt} failed (${error?.status || error?.message}), retrying in ${delay}ms...`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  throw new Error(`${label} failed after ${maxRetries} retries`);
+}
+
 // NO exa-js import - using direct API calls
 
 interface SearchCriteria {
@@ -18,6 +49,10 @@ interface SearchCriteria {
   geographicFocus?: string;
   strategy?: "buy-side" | "sell-side" | "dual";
   maxResults?: number;
+  employeeCount?: string[];
+  yearsInBusiness?: string[];
+  fundingStatus?: string[];
+  growthStatus?: string[];
 }
 
 interface AutoApprovalRules {
@@ -122,8 +157,8 @@ export class AgentOrchestrator {
     
     console.log("[Agent] Calling Exa API directly with query:", query);
 
-    // Direct API call to Exa - NO exa-js library
-    const response = await fetch('https://api.exa.ai/search', {
+    // Direct API call to Exa with retry
+    const response = await withRetry(() => fetch('https://api.exa.ai/search', {
       method: 'POST',
       headers: {
         'x-api-key': process.env.EXA_API_KEY || '',
@@ -140,7 +175,7 @@ export class AgentOrchestrator {
           }
         }
       })
-    });
+    }), 'Exa API search');
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -187,8 +222,12 @@ export class AgentOrchestrator {
   private buildExaQuery(criteria: SearchCriteria): string {
     const parts = [criteria.query];
     if (criteria.industry) parts.push(criteria.industry);
-    if (criteria.revenueRange) parts.push(criteria.revenueRange);
+    if (criteria.revenueRange) parts.push(`revenue ${criteria.revenueRange}`);
     if (criteria.geographicFocus) parts.push(criteria.geographicFocus);
+    if (criteria.employeeCount?.length) parts.push(`${criteria.employeeCount.join(" or ")} employees`);
+    if (criteria.yearsInBusiness?.length) parts.push(`established ${criteria.yearsInBusiness.join(" or ")} years`);
+    if (criteria.fundingStatus?.length) parts.push(criteria.fundingStatus.join(" or "));
+    if (criteria.growthStatus?.length) parts.push(criteria.growthStatus.join(" or "));
     return parts.join(" ");
   }
 
@@ -300,11 +339,11 @@ Confidence levels:
 - Medium: Reasonable fit, some uncertainty
 - Low: Marginal fit or significant gaps`;
 
-    const response = await anthropic.messages.create({
+    const response = await withRetry(() => anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
       max_tokens: 2000,
       messages: [{ role: "user", content: prompt }],
-    });
+    }), `Claude scoring ${company.title}`);
 
     let jsonText = "";
     for (const block of response.content) {
@@ -524,7 +563,11 @@ Confidence levels:
         throw new Error("Final report is empty after enrichment");
       }
 
-      // Step 4: Save to database
+      // Step 4: Score report quality
+      const { qualityScore, contactsFound } = this.scoreReportQuality(finalReport);
+      console.log(`[Agent][Pipeline] Report quality: ${qualityScore}/11 sections, ${contactsFound} contacts found`);
+
+      // Step 5: Save to database
       console.log(`[Agent][Pipeline] Saving report to database (${finalReport.length} chars)...`);
       const report = await storage.createReport({
         companyName: company.title,
@@ -534,9 +577,11 @@ Confidence levels:
         geographicFocus: company.geographicFocus,
         report: finalReport,
         status: "completed",
+        qualityScore,
+        contactsFound,
       });
 
-      console.log(`[Agent][Pipeline] Report saved - ID: ${report.id}, content length: ${report.report?.length || 'NULL'}`);
+      console.log(`[Agent][Pipeline] Report saved - ID: ${report.id}, quality: ${qualityScore}/11, contacts: ${contactsFound}`);
 
       if (!report.report) {
         console.error(`[Agent][Pipeline] CRITICAL: Report saved with NULL content! Report ID: ${report.id}`);
@@ -606,7 +651,7 @@ Search thoroughly - check the company website's "About Us" / "Team" / "Leadershi
 
 Use web search to find current information.`;
 
-    const response = await anthropic.messages.create({
+    const response = await withRetry(() => anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
       max_tokens: 16000,
       messages: [{ role: "user", content: prompt }],
@@ -616,7 +661,7 @@ Use web search to find current information.`;
           name: "web_search",
         },
       ],
-    });
+    }), `Claude research ${company.title}`);
 
     console.log(`[Agent][Research] Claude response - stop_reason: ${response.stop_reason}, blocks: ${response.content.length}`);
 
@@ -681,6 +726,33 @@ Use web search to find current information.`;
     }
 
     return enhancedReport;
+  }
+
+  private scoreReportQuality(report: string): { qualityScore: number; contactsFound: number } {
+    const expectedSections = [
+      /executive summary/i,
+      /strategic assessment/i,
+      /business overview/i,
+      /financial intelligence/i,
+      /competitive landscape/i,
+      /management team/i,
+      /growth indicators/i,
+      /key contacts|decision-maker/i,
+      /risks.*diligence/i,
+      /valuation framework/i,
+      /next steps/i,
+    ];
+
+    let qualityScore = 0;
+    for (const pattern of expectedSections) {
+      if (pattern.test(report)) qualityScore++;
+    }
+
+    // Count contacts found (pattern: **Name** - Title)
+    const contactMatches = report.match(/\*\*[^*]+\*\*\s*-\s*[^\n]+/g);
+    const contactsFound = contactMatches ? contactMatches.length : 0;
+
+    return { qualityScore, contactsFound };
   }
 }
 
