@@ -1,0 +1,156 @@
+import { drizzle } from "drizzle-orm/node-postgres";
+import { eq, desc } from "drizzle-orm";
+import pg from "pg";
+import * as schema from "../drizzle/schema";
+
+const { Pool } = pg;
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+
+export const db = drizzle(pool, { schema });
+
+class Storage {
+
+  async getRecentWorkflows(limit: number = 5) {
+    const result = await db
+      .select()
+      .from(schema.agentWorkflows)
+      .orderBy(desc(schema.agentWorkflows.createdAt))
+      .limit(limit);
+    return result;
+  }
+
+  async getPendingApprovals() {
+    const result = await db
+      .select()
+      .from(schema.discoveryQueue)
+      .where(eq(schema.discoveryQueue.approvalStatus, 'pending'))
+      .orderBy(desc(schema.discoveryQueue.createdAt));
+    return result;
+  }
+
+  async approveDiscoveryItem(id: number) {
+    await db
+      .update(schema.discoveryQueue)
+      .set({
+        approvalStatus: 'manual_approved',
+        approvedAt: new Date(),
+      })
+      .where(eq(schema.discoveryQueue.id, id));
+  }
+
+  async rejectDiscoveryItem(id: number) {
+    await db
+      .update(schema.discoveryQueue)
+      .set({
+        approvalStatus: 'rejected',
+      })
+      .where(eq(schema.discoveryQueue.id, id));
+  }
+
+  async getDiscoveryItem(id: number) {
+    const result = await db
+      .select()
+      .from(schema.discoveryQueue)
+      .where(eq(schema.discoveryQueue.id, id))
+      .limit(1);
+    return result[0];
+  }
+
+  async saveAgentConfig(config: any) {
+    const result = await db
+      .insert(schema.agentConfigurations)
+      .values(config)
+      .returning();
+    return result[0];
+  }
+
+  async getActiveAgentConfigs() {
+    const result = await db
+      .select()
+      .from(schema.agentConfigurations)
+      .where(eq(schema.agentConfigurations.isActive, true));
+    return result;
+  }
+
+  async getAllReports() {
+    const result = await db
+      .select()
+      .from(schema.reports)
+      .orderBy(desc(schema.reports.createdAt));
+    return result;
+  }
+
+  async createReport(data: any) {
+    const result = await db
+      .insert(schema.reports)
+      .values(data)
+      .returning();
+    return result[0];
+  }
+
+  async updateReport(id: number, data: any) {
+    await db
+      .update(schema.reports)
+      .set(data)
+      .where(eq(schema.reports.id, id));
+  }
+
+  async createWorkflow(data: any) {
+    const result = await db
+      .insert(schema.agentWorkflows)
+      .values(data)
+      .returning();
+    return result[0];
+  }
+
+  async updateWorkflow(id: number, data: any) {
+    await db
+      .update(schema.agentWorkflows)
+      .set(data)
+      .where(eq(schema.agentWorkflows.id, id));
+  }
+
+  async addToDiscoveryQueue(data: any) {
+    const result = await db
+      .insert(schema.discoveryQueue)
+      .values(data)
+      .returning();
+    return result[0];
+  }
+
+  async updateDiscoveryQueueItem(id: number, data: any) {
+    await db
+      .update(schema.discoveryQueue)
+      .set(data)
+      .where(eq(schema.discoveryQueue.id, id));
+  }
+
+  async getDiscoveryQueue(workflowId: number) {
+    const result = await db
+      .select()
+      .from(schema.discoveryQueue)
+      .where(eq(schema.discoveryQueue.workflowId, workflowId));
+    return result;
+  }
+
+  async getAgentConfig(id: number) {
+    const result = await db
+      .select()
+      .from(schema.agentConfigurations)
+      .where(eq(schema.agentConfigurations.id, id))
+      .limit(1);
+    return result[0];
+  }
+
+  async updateAgentConfig(id: number, data: any) {
+    await db
+      .update(schema.agentConfigurations)
+      .set(data)
+      .where(eq(schema.agentConfigurations.id, id));
+  }
+}
+
+export const storage = new Storage();
