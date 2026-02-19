@@ -248,6 +248,13 @@ export class WeeklyIntelligenceEngine {
       return trendId;
     } catch (error: any) {
       console.error(`[WI] Weekly scan FAILED:`, error?.message || error);
+      // Store the error in the trend record for debugging via API
+      try {
+        await db
+          .update(schema.weeklyTrends)
+          .set({ rawTrendsData: { error: error?.message || String(error), stack: error?.stack?.substring(0, 500) } })
+          .where(eq(schema.weeklyTrends.id, trendId));
+      } catch { /* ignore storage error */ }
       throw error;
     }
   }
@@ -305,6 +312,7 @@ export class WeeklyIntelligenceEngine {
       }
     }
 
+    console.log(`[WI] News scan complete: ${allResults.length} raw results, ${unique.size} unique after dedup`);
     return Array.from(unique.values());
   }
 
@@ -313,10 +321,13 @@ export class WeeklyIntelligenceEngine {
       .map((n, i) => `[${i + 1}] ${n.title}\n${n.text?.substring(0, 300) || 'No text'}`)
       .join('\n\n');
 
-    const prompt = `Analyze these M&A news results from recent searches. Identify the top 5 hottest sectors for sell-side M&A advisory opportunities in the lower middle market ($20M-$100M revenue companies).
+    const newsSection = newsSnippets.trim()
+      ? `Here are recent M&A news results to inform your analysis:\n\nNEWS DATA:\n${newsSnippets}`
+      : `No recent news data was available from search. Use your knowledge of current M&A market trends in 2025-2026 to identify hot sectors.`;
 
-NEWS DATA:
-${newsSnippets}
+    const prompt = `Identify the top 5 hottest sectors for sell-side M&A advisory opportunities in the lower middle market ($10M-$100M revenue companies).
+
+${newsSection}
 
 For each sector, provide:
 - name: Clear sector name (e.g., "Healthcare IT Services", "Industrial Automation")
