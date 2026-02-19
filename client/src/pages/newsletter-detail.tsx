@@ -65,12 +65,43 @@ export default function NewsletterDetailPage({ id }: { id: string }) {
   const trendWeek = data?.trendWeek;
   const contacts: any[] = data?.contacts || [];
 
-  const copyToClipboard = (text: string, label: string) => {
-    navigator.clipboard.writeText(text);
-    toast({ title: `${label} copied to clipboard` });
+  const copyToClipboard = async (text: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast({ title: `${label} copied to clipboard` });
+    } catch {
+      // Fallback for older browsers or permission issues
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+      toast({ title: `${label} copied to clipboard` });
+    }
   };
 
-  const copyAllEmails = () => {
+  const copyNewsletterHtml = async () => {
+    try {
+      // Copy as rich HTML so it pastes formatted into email clients
+      const blob = new Blob([newsletter.content], { type: "text/html" });
+      const plainBlob = new Blob([newsletter.content], { type: "text/plain" });
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/html": blob,
+          "text/plain": plainBlob,
+        }),
+      ]);
+      toast({ title: "Newsletter copied as formatted HTML" });
+    } catch {
+      // Fallback: copy raw HTML text
+      await copyToClipboard(newsletter.content, "Newsletter");
+    }
+  };
+
+  const copyAllEmails = async () => {
     const emails = contacts
       .map((c) => c.contactEmail)
       .filter(Boolean);
@@ -78,8 +109,7 @@ export default function NewsletterDetailPage({ id }: { id: string }) {
       toast({ title: "No emails to copy", variant: "destructive" });
       return;
     }
-    navigator.clipboard.writeText(emails.join(", "));
-    toast({ title: `${emails.length} emails copied`, description: "Ready to paste into BCC" });
+    await copyToClipboard(emails.join(", "), `${emails.length} emails`);
   };
 
   const exportCsv = () => {
@@ -192,7 +222,7 @@ export default function NewsletterDetailPage({ id }: { id: string }) {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => copyToClipboard(newsletter.content, "Newsletter")}
+                onClick={copyNewsletterHtml}
               >
                 <Copy className="h-3 w-3 mr-2" />
                 Copy Newsletter
@@ -200,9 +230,10 @@ export default function NewsletterDetailPage({ id }: { id: string }) {
             </div>
           </CardHeader>
           <CardContent>
-            <pre className="whitespace-pre-wrap font-sans text-sm bg-gray-50 p-4 rounded-lg border leading-relaxed">
-              {newsletter.content}
-            </pre>
+            <div
+              className="bg-gray-50 p-6 rounded-lg border"
+              dangerouslySetInnerHTML={{ __html: newsletter.content }}
+            />
           </CardContent>
         </Card>
 
