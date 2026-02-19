@@ -63,6 +63,13 @@ interface DiscoveredCompany {
   text: string;
 }
 
+const GENERIC_EMAIL_PREFIXES = /^(info|support|contact|hello|sales|admin|noreply|no-reply|office|general|team|help|careers|jobs|hr|billing|marketing|press|media|solutions|enquiries|inquiries|service|services|feedback|webmaster|postmaster|reply|do-not-reply|notifications|alerts|candidate|digital|reception|mail)@/i;
+
+function isPersonalEmail(email: string | null): boolean {
+  if (!email) return false;
+  return !GENERIC_EMAIL_PREFIXES.test(email);
+}
+
 export class WeeklyIntelligenceEngine {
   async runWeeklyScan(): Promise<number> {
     const monday = getMonday(new Date());
@@ -556,8 +563,8 @@ Return ONLY valid JSON:
         }
       }
 
-      // If Apollo gave us both name and email, we're done
-      if (apolloName && apolloEmail) {
+      // If Apollo gave us both name and a personal email, we're done
+      if (apolloName && isPersonalEmail(apolloEmail)) {
         await db
           .update(schema.targetContacts)
           .set({
@@ -576,7 +583,8 @@ Return ONLY valid JSON:
         const enrichResult = await this.enrichContactViaExa(contact.companyName, contact.companyWebsite);
         // Merge: prefer Apollo name if Exa didn't find one, prefer found email over inferred
         const finalName = enrichResult?.contactName || apolloName || null;
-        const finalEmail = enrichResult?.contactEmail || apolloEmail || null;
+        const rawEmail = enrichResult?.contactEmail || apolloEmail || null;
+        const finalEmail = isPersonalEmail(rawEmail) ? rawEmail : null;
 
         await db
           .update(schema.targetContacts)
@@ -596,7 +604,7 @@ Return ONLY valid JSON:
           .update(schema.targetContacts)
           .set({
             contactName: apolloName,
-            contactEmail: apolloEmail,
+            contactEmail: isPersonalEmail(apolloEmail) ? apolloEmail : null,
             contactPhone: apolloPhone,
             enrichmentStatus: apolloName ? "enriched" : "failed",
           })
@@ -654,8 +662,7 @@ Return ONLY valid JSON:
             const rawEmails = siteText.match(emailRegex) || [];
             // Filter to domain emails, exclude generic ones
             const domainEmails = rawEmails.filter(e =>
-              e.includes(domain) &&
-              !e.match(/^(info|support|contact|hello|sales|admin|noreply|no-reply|office|general|team|help|careers|jobs|hr|billing|marketing|press|media)@/i)
+              e.includes(domain) && isPersonalEmail(e)
             );
             if (domainEmails.length > 0) {
               foundEmail = domainEmails[0];
@@ -700,8 +707,7 @@ Return ONLY valid JSON:
             const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
             const rawEmails = emailText.match(emailRegex) || [];
             const domainEmails = rawEmails.filter(e =>
-              e.includes(domain) &&
-              !e.match(/^(info|support|contact|hello|sales|admin|noreply|no-reply|office|general|team|help|careers|jobs|hr|billing|marketing|press|media)@/i)
+              e.includes(domain) && isPersonalEmail(e)
             );
             if (domainEmails.length > 0 && !foundEmail) {
               foundEmail = domainEmails[0];
@@ -785,8 +791,9 @@ IMPORTANT:
     try {
       const result = JSON.parse(jsonMatch[0]);
       foundName = result.contactName || foundName;
-      // Prefer regex-found email (more reliable), fall back to Claude-extracted
-      foundEmail = foundEmail || result.contactEmail || null;
+      // Prefer regex-found email (more reliable), fall back to Claude-extracted — but only personal emails
+      const claudeEmail = result.contactEmail || null;
+      foundEmail = foundEmail || (isPersonalEmail(claudeEmail) ? claudeEmail : null);
 
       // Strategy 4: Infer email from name + domain if we have a name but no email
       if (foundName && !foundEmail && domain) {
