@@ -79,15 +79,36 @@ function extractDomain(url: string | null): string {
   }
 }
 
+// Known news, media, and third-party domains that should never be accepted as company email domains
+const BLOCKED_EMAIL_DOMAINS = new Set([
+  'ajc.com', 'nytimes.com', 'wsj.com', 'bloomberg.com', 'reuters.com', 'forbes.com',
+  'fortune.com', 'businessinsider.com', 'cnbc.com', 'techcrunch.com', 'wired.com',
+  'theverge.com', 'arstechnica.com', 'venturebeat.com', 'siliconangle.com',
+  'builtinchicago.org', 'builtin.com', 'crunchbase.com', 'glassdoor.com',
+  'linkedin.com', 'facebook.com', 'twitter.com', 'instagram.com',
+  'americanmachinist.com', 'industryweek.com', 'manufacturingnet.com',
+  'beckersdental.com', 'beckershospitalreview.com', 'beckersasc.com',
+  'pehub.com', 'pitchbook.com', 'axial.net', 'themiddlemarket.com',
+  'saastr.com', 'pulse2.com', 'prnewswire.com', 'businesswire.com', 'globenewswire.com',
+  'greatplacetowork.com', 'inc.com', 'entrepreneur.com', 'hbr.org',
+  'lightercapital.com', 'tidemarkcap.com', 'bizjournals.com',
+  'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com',
+]);
+
 /**
  * Check if an email is a valid personal contact email for a given company.
- * Rejects generic prefixes AND emails from unrelated domains.
+ * Rejects generic prefixes, blocked domains, AND emails from unrelated domains.
  */
 function isValidContactEmail(email: string | null, companyWebsite: string | null): boolean {
   if (!email || !isPersonalEmail(email)) return false;
-  const companyDomain = extractDomain(companyWebsite);
-  if (!companyDomain) return true; // can't verify domain, accept if personal
   const emailDomain = email.split('@')[1]?.toLowerCase() || '';
+  // Reject emails from known news/media/third-party domains
+  if (BLOCKED_EMAIL_DOMAINS.has(emailDomain)) {
+    console.log(`[WI]     Rejected blocked-domain email: ${email}`);
+    return false;
+  }
+  const companyDomain = extractDomain(companyWebsite);
+  if (!companyDomain) return true; // can't verify domain, accept if personal + not blocked
   // Accept if email domain matches company domain
   if (emailDomain === companyDomain) return true;
   // Accept if one contains the other (e.g., company "acme.com" and email "user@mail.acme.com")
@@ -616,11 +637,21 @@ Return ONLY valid JSON:
             for (const person of people) {
               if (!person.email || !person.name) continue;
               if (!isPersonalEmail(person.email)) continue;
+              // Reject known news/media/third-party domains
+              const pEmailDomain = person.email.split('@')[1]?.toLowerCase() || '';
+              if (BLOCKED_EMAIL_DOMAINS.has(pEmailDomain)) continue;
 
               const companyName = person.organization?.name || '';
               const companyDomain = person.organization?.primary_domain || person.organization?.website_url || null;
 
               if (!companyName) continue;
+
+              // Verify email domain matches Apollo's company domain
+              const emailDomain = person.email.split('@')[1]?.toLowerCase() || '';
+              const orgDomain = extractDomain(companyDomain ? (companyDomain.startsWith('http') ? companyDomain : `https://${companyDomain}`) : null);
+              if (orgDomain && emailDomain !== orgDomain && !emailDomain.endsWith('.' + orgDomain)) {
+                continue; // skip — email is from a different organization
+              }
 
               const key = companyName.toLowerCase().replace(/[^a-z0-9]/g, '');
               if (!apolloPeopleMap.has(key)) {
@@ -652,17 +683,15 @@ Return ONLY valid JSON:
       const apolloMatch = apolloPeopleMap.get(key);
 
       if (apolloMatch && isPersonalEmail(apolloMatch.email)) {
-        // Verify the email domain makes sense (use Apollo's company domain for validation)
+        // Verify the email domain matches Apollo's own company domain
         const emailDomain = apolloMatch.email.split('@')[1]?.toLowerCase() || '';
         const apolloDomain = extractDomain(apolloMatch.companyDomain ? (apolloMatch.companyDomain.startsWith('http') ? apolloMatch.companyDomain : `https://${apolloMatch.companyDomain}`) : null);
         const contactDomain = extractDomain(contact.companyWebsite);
 
-        // Accept if email domain matches either Apollo's company domain or our stored domain
-        const domainOk = !emailDomain || !contactDomain ||
-          emailDomain === contactDomain ||
-          emailDomain === apolloDomain ||
-          emailDomain.endsWith('.' + contactDomain) ||
-          contactDomain.endsWith('.' + emailDomain);
+        // Email must match at least one known company domain (Apollo's or ours)
+        const matchesApollo = apolloDomain && (emailDomain === apolloDomain || emailDomain.endsWith('.' + apolloDomain));
+        const matchesStored = contactDomain && (emailDomain === contactDomain || emailDomain.endsWith('.' + contactDomain));
+        const domainOk = matchesApollo || matchesStored;
 
         if (domainOk) {
           await db
@@ -688,6 +717,13 @@ Return ONLY valid JSON:
     // ========================================
     for (const [key, person] of apolloPeopleMap) {
       if (existingCompanyKeys.has(key)) continue; // already have this company
+
+      // Validate email domain matches Apollo's company domain before adding
+      const emailDomain = person.email.split('@')[1]?.toLowerCase() || '';
+      const apolloDomain = extractDomain(person.companyDomain ? (person.companyDomain.startsWith('http') ? person.companyDomain : `https://${person.companyDomain}`) : null);
+      if (apolloDomain && emailDomain !== apolloDomain && !emailDomain.endsWith('.' + apolloDomain)) {
+        continue; // skip cross-domain contacts
+      }
 
       // Add as new target contact
       try {
