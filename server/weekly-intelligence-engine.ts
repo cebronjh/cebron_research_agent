@@ -121,6 +121,18 @@ function isValidContactEmail(email: string | null, companyWebsite: string | null
   return false;
 }
 
+/**
+ * Estimate revenue range from employee count.
+ * Rough heuristic: ~$200K revenue per employee for mid-market services/manufacturing.
+ */
+function estimateRevenueFromEmployees(employeeCount: number | null): string | null {
+  if (!employeeCount) return null;
+  if (employeeCount <= 100) return '$10M-$25M';
+  if (employeeCount <= 250) return '$25M-$50M';
+  if (employeeCount <= 500) return '$50M-$75M';
+  return '$75M-$100M';
+}
+
 export class WeeklyIntelligenceEngine {
   async runWeeklyScan(): Promise<number> {
     const monday = getMonday(new Date());
@@ -188,45 +200,22 @@ export class WeeklyIntelligenceEngine {
       }
       console.log(`[WI] Step 2 complete: ${sectorRows.length} hot sectors identified`);
 
-      // Step 3: Discover Companies per sector
-      console.log(`[WI] Step 3/5: Discovering target companies...`);
+      // Step 3: Apollo-first contact discovery (CONTACT-FIRST approach)
+      // Apollo is the PRIMARY source — we search for CEOs/founders with verified emails
+      // Filter: 50-1000 employees ($10M-$100M revenue proxy)
+      console.log(`[WI] Step 3/5: Discovering contacts via Apollo (contact-first)...`);
       for (const sector of sectorRows) {
-        console.log(`[WI]   Searching sector: ${sector.name}`);
-        const companies = await this.discoverCompaniesForSector(sector);
-        console.log(`[WI]   Found ${companies.length} companies for ${sector.name}`);
-
-        // Save as target_contacts (skip if company name already exists in this sector)
-        const existingContacts = await db
-          .select({ companyName: schema.targetContacts.companyName })
-          .from(schema.targetContacts)
-          .where(eq(schema.targetContacts.sectorId, sector.dbId));
-        const existingNames = new Set(existingContacts.map(c => c.companyName?.toLowerCase().replace(/[^a-z0-9]/g, '')));
-
-        for (const company of companies) {
-          const key = company.title.toLowerCase().replace(/[^a-z0-9]/g, '');
-          if (existingNames.has(key)) continue;
-          existingNames.add(key);
-          await db.insert(schema.targetContacts).values({
-            sectorId: sector.dbId,
-            companyName: company.title,
-            companyWebsite: company.url,
-            estimatedRevenue: null,
-            ownershipType: "Unknown",
-            enrichmentStatus: "pending",
-          });
-        }
+        console.log(`[WI]   Sector: ${sector.name}`);
+        const count = await this.discoverContactsViaApollo(sector.name, sector.searchQuery, sector.dbId);
+        console.log(`[WI]   Apollo found ${count} email-verified contacts for ${sector.name}`);
       }
       console.log(`[WI] Step 3 complete`);
 
-      // Step 4: Classify & Enrich
-      console.log(`[WI] Step 4/5: Classifying ownership & enriching contacts...`);
+      // Step 4: Classify ownership, filter PE-backed, supplement with Exa if < 10 viable contacts
+      // Then prune any contacts without emails — they provide no value
+      console.log(`[WI] Step 4/5: Classifying ownership & ensuring 10-15 contacts per sector...`);
       for (const sector of sectorRows) {
-        const contacts = await db
-          .select()
-          .from(schema.targetContacts)
-          .where(eq(schema.targetContacts.sectorId, sector.dbId));
-
-        await this.classifyAndEnrichContacts(sector.dbId, contacts);
+        await this.classifyAndPruneContacts(sector);
       }
       console.log(`[WI] Step 4 complete`);
 
@@ -238,8 +227,7 @@ export class WeeklyIntelligenceEngine {
           .from(schema.targetContacts)
           .where(eq(schema.targetContacts.sectorId, sector.dbId));
 
-        const nonPeContacts = contacts.filter(c => c.ownershipType !== "PE-Backed");
-        await this.generateNewsletter(sector, nonPeContacts);
+        await this.generateNewsletter(sector, contacts);
 
         await db
           .update(schema.hotSectors)
@@ -386,8 +374,419 @@ Return ONLY valid JSON with this exact structure:
     return sectors;
   }
 
+  /**
+   * PRIMARY CONTACT DISCOVERY: Search Apollo for CEOs/founders/owners with verified emails.
+   * Filters by company size (50-1000 employees = ~$10M-$100M revenue).
+   * Only saves contacts that have a valid personal email.
+   */
+  private async discoverContactsViaApollo(
+    sectorName: string,
+    searchQuery: string,
+    sectorId: number
+  ): Promise<number> {
+    const apolloApiKey = process.env.APOLLO_API_KEY;
+    if (!apolloApiKey) {
+      console.log(`[WI]   No Apollo API key — skipping Apollo contact discovery`);
+      return 0;
+    }
+
+    // Run multiple Apollo queries to maximize contact coverage
+    // Target: 50-1000 employees = ~$10M-$100M revenue
+    const apolloQueries = [
+      // Primary: CEO/Founder/Owner in the sector, mid-market size
+      {
+        q_keywords: sectorName,
+        person_titles: ["CEO", "Founder", "Owner", "President"],
+        organization_num_employees_ranges: ["51,1000"],
+        per_page: 25,
+      },
+      // Secondary: Slightly different titles, smaller companies (more likely independently owned)
+      {
+        q_keywords: sectorName,
+        person_titles: ["CEO", "Managing Director", "Founder", "General Manager"],
+        organization_num_employees_ranges: ["51,500"],
+        per_page: 25,
+      },
+      // Tertiary: Use Claude's sector-specific search query for more targeted results
+      {
+        q_keywords: searchQuery,
+        person_titles: ["CEO", "Founder", "Owner"],
+        organization_num_employees_ranges: ["51,1000"],
+        per_page: 25,
+      },
+    ];
+
+    const contactsMap = new Map<string, {
+      name: string;
+      email: string;
+      phone: string | null;
+      title: string;
+      companyName: string;
+      companyDomain: string | null;
+      employeeCount: number | null;
+    }>();
+
+    for (const queryParams of apolloQueries) {
+      try {
+        const apolloResponse = await fetch('https://api.apollo.io/v1/people/search', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-cache',
+            'X-Api-Key': apolloApiKey,
+          },
+          body: JSON.stringify({
+            ...queryParams,
+            reveal_personal_emails: false,
+          }),
+        });
+
+        if (apolloResponse.ok) {
+          const apolloData = await apolloResponse.json();
+          const people = apolloData.people || [];
+          console.log(`[WI]     Apollo query returned ${people.length} people`);
+
+          for (const person of people) {
+            // MUST have both name and email — that's the whole point of contact-first
+            if (!person.email || !person.name) continue;
+            if (!isPersonalEmail(person.email)) continue;
+
+            const emailDomain = person.email.split('@')[1]?.toLowerCase() || '';
+            if (BLOCKED_EMAIL_DOMAINS.has(emailDomain)) continue;
+
+            const companyName = person.organization?.name || '';
+            const companyDomain = person.organization?.primary_domain || null;
+            if (!companyName) continue;
+
+            // Verify email domain matches Apollo's company domain
+            const orgDomain = companyDomain?.toLowerCase().replace('www.', '') || '';
+            if (orgDomain && emailDomain !== orgDomain && !emailDomain.endsWith('.' + orgDomain)) {
+              continue;
+            }
+
+            // Dedupe by normalized company name (one contact per company)
+            const key = companyName.toLowerCase().replace(/[^a-z0-9]/g, '');
+            if (!contactsMap.has(key)) {
+              contactsMap.set(key, {
+                name: person.name,
+                email: person.email,
+                phone: person.phone_numbers?.[0]?.sanitized_number || null,
+                title: person.title || '',
+                companyName,
+                companyDomain,
+                employeeCount: person.organization?.estimated_num_employees || null,
+              });
+            }
+          }
+        } else {
+          const errorText = await apolloResponse.text();
+          console.warn(`[WI]     Apollo query failed (${apolloResponse.status}): ${errorText.substring(0, 200)}`);
+        }
+      } catch (error: any) {
+        console.warn(`[WI]     Apollo query error: ${error?.message}`);
+      }
+    }
+
+    console.log(`[WI]   Apollo discovered ${contactsMap.size} unique email-verified contacts`);
+
+    // Save to DB — only contacts with verified emails
+    let saved = 0;
+    const existingContacts = await db
+      .select({ companyName: schema.targetContacts.companyName })
+      .from(schema.targetContacts)
+      .where(eq(schema.targetContacts.sectorId, sectorId));
+    const existingNames = new Set(existingContacts.map(c => c.companyName?.toLowerCase().replace(/[^a-z0-9]/g, '')));
+
+    for (const [key, contact] of contactsMap) {
+      if (existingNames.has(key)) continue;
+      existingNames.add(key);
+
+      const websiteUrl = contact.companyDomain
+        ? (contact.companyDomain.startsWith('http') ? contact.companyDomain : `https://${contact.companyDomain}`)
+        : null;
+
+      try {
+        await db.insert(schema.targetContacts).values({
+          sectorId,
+          companyName: contact.companyName,
+          companyWebsite: websiteUrl,
+          contactName: contact.name,
+          contactEmail: contact.email,
+          contactPhone: contact.phone,
+          estimatedRevenue: estimateRevenueFromEmployees(contact.employeeCount),
+          ownershipType: 'Unknown',
+          enrichmentStatus: 'enriched',
+        });
+        saved++;
+      } catch (error: any) {
+        // Skip duplicates
+      }
+    }
+
+    console.log(`[WI]   Saved ${saved} Apollo contacts for sector`);
+    return saved;
+  }
+
+  /**
+   * Classify ownership (PE filter), supplement with Exa if needed, prune contacts without emails.
+   * Goal: 10-15 email-verified, non-PE contacts per sector.
+   */
+  private async classifyAndPruneContacts(
+    sector: HotSector & { dbId: number }
+  ): Promise<void> {
+    let contacts = await db
+      .select()
+      .from(schema.targetContacts)
+      .where(eq(schema.targetContacts.sectorId, sector.dbId));
+
+    if (contacts.length === 0) {
+      console.log(`[WI]   No contacts for ${sector.name}, supplementing with Exa...`);
+      await this.supplementWithExa(sector, 15);
+      contacts = await db
+        .select()
+        .from(schema.targetContacts)
+        .where(eq(schema.targetContacts.sectorId, sector.dbId));
+    }
+
+    if (contacts.length === 0) {
+      console.log(`[WI]   Still no contacts for ${sector.name} after Exa supplement`);
+      return;
+    }
+
+    // PE Classification (batches of 10)
+    const BATCH_SIZE = 10;
+    let peBackedCount = 0;
+
+    for (let i = 0; i < contacts.length; i += BATCH_SIZE) {
+      const batch = contacts.slice(i, i + BATCH_SIZE);
+      const companyList = batch
+        .map((c, idx) => `${idx + 1}. ${c.companyName} (${c.companyWebsite || 'no website'})`)
+        .join('\n');
+
+      const prompt = `Classify each company's ownership type based on what you know. Return JSON only.
+
+Companies:
+${companyList}
+
+For each company, determine:
+- ownershipType: "Founder-Led", "Family-Owned", "PE-Backed", or "Unknown"
+- estimatedRevenue: rough estimate like "$30M" or "Unknown"
+
+Return ONLY valid JSON:
+{
+  "companies": [
+    { "index": 1, "ownershipType": "Founder-Led", "estimatedRevenue": "$25M" }
+  ]
+}`;
+
+      try {
+        const response = await withRetry(() => anthropic.messages.create({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 2000,
+          messages: [{ role: "user", content: prompt }],
+        }), `Claude PE classification batch ${Math.floor(i / BATCH_SIZE) + 1}`);
+
+        let jsonText = "";
+        for (const block of response.content) {
+          if (block.type === "text") jsonText += block.text;
+        }
+
+        jsonText = jsonText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+        const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const data = JSON.parse(jsonMatch[0]);
+          const classifications = data.companies || [];
+
+          for (const cls of classifications) {
+            const idx = (cls.index || 0) - 1;
+            if (idx >= 0 && idx < batch.length) {
+              const contact = batch[idx];
+              const isPE = cls.ownershipType === "PE-Backed";
+              if (isPE) peBackedCount++;
+
+              // Update ownership; also fill in revenue if Apollo didn't provide it
+              const updateData: any = {
+                ownershipType: cls.ownershipType || "Unknown",
+              };
+              if (!contact.estimatedRevenue && cls.estimatedRevenue && cls.estimatedRevenue !== "Unknown") {
+                updateData.estimatedRevenue = cls.estimatedRevenue;
+              }
+
+              await db
+                .update(schema.targetContacts)
+                .set(updateData)
+                .where(eq(schema.targetContacts.id, contact.id));
+            }
+          }
+        }
+      } catch (error: any) {
+        console.error(`[WI] PE classification batch failed:`, error?.message);
+      }
+    }
+
+    // Update PE filtered count on sector
+    await db
+      .update(schema.hotSectors)
+      .set({ peBackedFiltered: peBackedCount })
+      .where(eq(schema.hotSectors.id, sector.dbId));
+
+    // Count viable contacts (non-PE + has email)
+    const refreshed = await db
+      .select()
+      .from(schema.targetContacts)
+      .where(eq(schema.targetContacts.sectorId, sector.dbId));
+    const viable = refreshed.filter(c => c.ownershipType !== 'PE-Backed' && c.contactEmail);
+
+    console.log(`[WI]   ${sector.name}: ${viable.length} viable contacts with emails (${peBackedCount} PE-backed filtered)`);
+
+    // If < 10 viable contacts, supplement with Exa discovery + enrichment
+    if (viable.length < 10) {
+      const needed = 15 - viable.length;
+      console.log(`[WI]   Need ${needed} more contacts, supplementing with Exa...`);
+      await this.supplementWithExa(sector, needed);
+    }
+
+    // Prune: remove PE-backed and contacts without emails (they provide no value)
+    const toPrune = await db
+      .select()
+      .from(schema.targetContacts)
+      .where(eq(schema.targetContacts.sectorId, sector.dbId));
+
+    let pruned = 0;
+    for (const contact of toPrune) {
+      if (!contact.contactEmail || contact.ownershipType === 'PE-Backed') {
+        await db.delete(schema.targetContacts).where(eq(schema.targetContacts.id, contact.id));
+        pruned++;
+      }
+    }
+
+    // Final count
+    const finalContacts = await db
+      .select()
+      .from(schema.targetContacts)
+      .where(eq(schema.targetContacts.sectorId, sector.dbId));
+
+    console.log(`[WI]   ${sector.name}: ${finalContacts.length} final contacts (pruned ${pruned} without email or PE-backed)`);
+  }
+
+  /**
+   * Exa supplement: discover companies via Exa search, then try to enrich each one.
+   * Only saves contacts where we find a valid email.
+   */
+  private async supplementWithExa(
+    sector: HotSector & { dbId: number },
+    targetCount: number
+  ): Promise<number> {
+    console.log(`[WI]   Exa supplement: searching for up to ${targetCount} more contacts in ${sector.name}...`);
+
+    // Discover companies via Exa
+    const companies = await this.discoverCompaniesForSector(sector);
+    if (companies.length === 0) {
+      console.log(`[WI]   Exa found no companies for ${sector.name}`);
+      return 0;
+    }
+
+    // Get existing contacts to avoid duplicates
+    const existing = await db
+      .select()
+      .from(schema.targetContacts)
+      .where(eq(schema.targetContacts.sectorId, sector.dbId));
+    const existingKeys = new Set(existing.map(c => c.companyName?.toLowerCase().replace(/[^a-z0-9]/g, '')));
+
+    let added = 0;
+    const apolloApiKey = process.env.APOLLO_API_KEY;
+
+    for (const company of companies) {
+      if (added >= targetCount) break;
+
+      const key = company.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (existingKeys.has(key)) continue;
+
+      let contactName: string | null = null;
+      let contactEmail: string | null = null;
+      let contactPhone: string | null = null;
+
+      // Try per-company Apollo search first
+      if (apolloApiKey) {
+        try {
+          const domain = extractDomain(company.url);
+          const apolloResponse = await fetch('https://api.apollo.io/v1/people/search', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-cache',
+              'X-Api-Key': apolloApiKey,
+            },
+            body: JSON.stringify({
+              organization_names: [company.title],
+              q_organization_domains: domain || undefined,
+              person_titles: ["CEO", "Founder", "Owner", "President"],
+              organization_num_employees_ranges: ["51,1000"],
+              per_page: 1,
+            }),
+          });
+
+          if (apolloResponse.ok) {
+            const apolloData = await apolloResponse.json();
+            const person = apolloData.people?.[0];
+            if (person?.email && person?.name) {
+              if (isValidContactEmail(person.email, company.url)) {
+                contactName = person.name;
+                contactEmail = person.email;
+                contactPhone = person.phone_numbers?.[0]?.sanitized_number || null;
+              }
+            }
+          }
+        } catch {
+          // Apollo per-company failed, try Exa next
+        }
+      }
+
+      // Try Exa enrichment if Apollo didn't find an email
+      if (!contactEmail) {
+        try {
+          const enrichResult = await this.enrichContactViaExa(company.title, company.url);
+          if (enrichResult?.contactEmail && isValidContactEmail(enrichResult.contactEmail, company.url)) {
+            contactName = enrichResult.contactName;
+            contactEmail = enrichResult.contactEmail;
+          }
+        } catch {
+          // Exa enrichment failed
+        }
+      }
+
+      // ONLY save if we found a valid email — contacts without emails are useless
+      if (contactEmail && contactName) {
+        try {
+          await db.insert(schema.targetContacts).values({
+            sectorId: sector.dbId,
+            companyName: company.title,
+            companyWebsite: company.url,
+            contactName,
+            contactEmail,
+            contactPhone,
+            ownershipType: 'Unknown',
+            estimatedRevenue: null,
+            enrichmentStatus: 'enriched',
+          });
+          existingKeys.add(key);
+          added++;
+          console.log(`[WI]     Exa supplement: added ${company.title} (${contactEmail})`);
+        } catch {
+          // Skip duplicates
+        }
+      }
+    }
+
+    console.log(`[WI]   Exa supplement added ${added} contacts with emails`);
+    return added;
+  }
+
+  /**
+   * Exa company discovery (used as supplementary source when Apollo doesn't yield enough).
+   */
   private async discoverCompaniesForSector(sector: HotSector & { dbId: number }): Promise<DiscoveredCompany[]> {
-    const query = `${sector.searchQuery} $20M-$100M revenue founder-led family-owned independent NOT private equity NOT PE-backed`;
+    const query = `${sector.searchQuery} $10M-$100M revenue founder-led family-owned independent NOT private equity NOT PE-backed`;
 
     const response = await withRetry(() => fetch('https://api.exa.ai/search', {
       method: 'POST',
@@ -432,7 +831,7 @@ Return ONLY valid JSON with this exact structure:
     // Use Claude to extract real company names from page titles/URLs/text
     const namedCompanies = await this.extractCompanyNames(rawCompanies);
 
-    // Deduplicate by normalized company name (after extraction, different URLs may resolve to the same company)
+    // Deduplicate by normalized company name
     const seen = new Map<string, DiscoveredCompany>();
     for (const company of namedCompanies) {
       const key = company.title.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -502,351 +901,6 @@ Return ONLY valid JSON:
     }
 
     return companies;
-  }
-
-  private async classifyAndEnrichContacts(
-    sectorId: number,
-    contacts: (typeof schema.targetContacts.$inferSelect)[]
-  ): Promise<void> {
-    if (contacts.length === 0) return;
-
-    // Batch classify with Claude (batches of 10)
-    const BATCH_SIZE = 10;
-    let peBackedCount = 0;
-
-    for (let i = 0; i < contacts.length; i += BATCH_SIZE) {
-      const batch = contacts.slice(i, i + BATCH_SIZE);
-      const companyList = batch
-        .map((c, idx) => `${idx + 1}. ${c.companyName} (${c.companyWebsite || 'no website'})`)
-        .join('\n');
-
-      const prompt = `Classify each company's ownership type based on what you know. Return JSON only.
-
-Companies:
-${companyList}
-
-For each company, determine:
-- ownershipType: "Founder-Led", "Family-Owned", "PE-Backed", or "Unknown"
-- estimatedRevenue: rough estimate like "$30M" or "Unknown"
-
-Return ONLY valid JSON:
-{
-  "companies": [
-    { "index": 1, "ownershipType": "Founder-Led", "estimatedRevenue": "$25M" }
-  ]
-}`;
-
-      try {
-        const response = await withRetry(() => anthropic.messages.create({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 2000,
-          messages: [{ role: "user", content: prompt }],
-        }), `Claude PE classification batch ${Math.floor(i / BATCH_SIZE) + 1}`);
-
-        let jsonText = "";
-        for (const block of response.content) {
-          if (block.type === "text") jsonText += block.text;
-        }
-
-        jsonText = jsonText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-        const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const data = JSON.parse(jsonMatch[0]);
-          const classifications = data.companies || [];
-
-          for (const cls of classifications) {
-            const idx = (cls.index || 0) - 1;
-            if (idx >= 0 && idx < batch.length) {
-              const contact = batch[idx];
-              const isPE = cls.ownershipType === "PE-Backed";
-              if (isPE) peBackedCount++;
-
-              await db
-                .update(schema.targetContacts)
-                .set({
-                  ownershipType: cls.ownershipType || "Unknown",
-                  estimatedRevenue: cls.estimatedRevenue || null,
-                })
-                .where(eq(schema.targetContacts.id, contact.id));
-            }
-          }
-        }
-      } catch (error: any) {
-        console.error(`[WI] PE classification batch failed:`, error?.message);
-      }
-    }
-
-    // Update PE filtered count on sector
-    await db
-      .update(schema.hotSectors)
-      .set({ peBackedFiltered: peBackedCount })
-      .where(eq(schema.hotSectors.id, sectorId));
-
-    console.log(`[WI]   Classified ${contacts.length} companies, ${peBackedCount} PE-backed filtered`);
-
-    // Re-fetch contacts with updated ownership
-    const allContacts = await db
-      .select()
-      .from(schema.targetContacts)
-      .where(eq(schema.targetContacts.sectorId, sectorId));
-    const toEnrich = allContacts.filter(c => c.ownershipType !== "PE-Backed");
-
-    const apolloApiKey = process.env.APOLLO_API_KEY;
-    let apolloSectorMatches = 0;
-    let apolloBonusContacts = 0;
-    let exaFallbacks = 0;
-
-    // ========================================
-    // PHASE 1: Apollo sector-wide people search (contact-first approach)
-    // Search for CEOs/founders in this sector's industry — returns people WITH emails
-    // ========================================
-    const apolloPeopleMap = new Map<string, { name: string; email: string; phone: string | null; companyName: string; companyDomain: string | null }>();
-
-    if (apolloApiKey) {
-      // Use Claude to generate Apollo search keywords for this sector
-      const sectorData = await db
-        .select()
-        .from(schema.hotSectors)
-        .where(eq(schema.hotSectors.id, sectorId))
-        .limit(1);
-      const sectorName = sectorData[0]?.sectorName || '';
-
-      // Search Apollo for people in this sector (multiple queries to maximize results)
-      const apolloQueries = [
-        { q_keywords: sectorName, person_titles: ["CEO", "Founder", "Owner", "President", "Managing Partner"], per_page: 25 },
-        { q_keywords: sectorName, person_titles: ["CEO", "Founder"], organization_num_employees_ranges: ["20,200"], per_page: 25 },
-      ];
-
-      for (const queryParams of apolloQueries) {
-        try {
-          const apolloResponse = await fetch('https://api.apollo.io/v1/people/search', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Cache-Control': 'no-cache',
-              'X-Api-Key': apolloApiKey,
-            },
-            body: JSON.stringify({
-              ...queryParams,
-              reveal_personal_emails: false,
-            }),
-          });
-
-          if (apolloResponse.ok) {
-            const apolloData = await apolloResponse.json();
-            const people = apolloData.people || [];
-            console.log(`[WI]     Apollo sector search returned ${people.length} people`);
-
-            for (const person of people) {
-              if (!person.email || !person.name) continue;
-              if (!isPersonalEmail(person.email)) continue;
-              // Reject known news/media/third-party domains
-              const pEmailDomain = person.email.split('@')[1]?.toLowerCase() || '';
-              if (BLOCKED_EMAIL_DOMAINS.has(pEmailDomain)) continue;
-
-              const companyName = person.organization?.name || '';
-              const companyDomain = person.organization?.primary_domain || person.organization?.website_url || null;
-
-              if (!companyName) continue;
-
-              // Verify email domain matches Apollo's company domain
-              const emailDomain = person.email.split('@')[1]?.toLowerCase() || '';
-              const orgDomain = extractDomain(companyDomain ? (companyDomain.startsWith('http') ? companyDomain : `https://${companyDomain}`) : null);
-              if (orgDomain && emailDomain !== orgDomain && !emailDomain.endsWith('.' + orgDomain)) {
-                continue; // skip — email is from a different organization
-              }
-
-              const key = companyName.toLowerCase().replace(/[^a-z0-9]/g, '');
-              if (!apolloPeopleMap.has(key)) {
-                apolloPeopleMap.set(key, {
-                  name: person.name,
-                  email: person.email,
-                  phone: person.phone_numbers?.[0]?.sanitized_number || null,
-                  companyName,
-                  companyDomain,
-                });
-              }
-            }
-          }
-        } catch (error: any) {
-          console.warn(`[WI]     Apollo sector search failed: ${error?.message}`);
-        }
-      }
-      console.log(`[WI]     Apollo sector search found ${apolloPeopleMap.size} unique contacts with emails`);
-    }
-
-    // ========================================
-    // PHASE 2: Match Apollo contacts to our discovered companies
-    // ========================================
-    const enrichedIds = new Set<number>();
-    const existingCompanyKeys = new Set(toEnrich.map(c => c.companyName?.toLowerCase().replace(/[^a-z0-9]/g, '') || ''));
-
-    for (const contact of toEnrich) {
-      const key = contact.companyName?.toLowerCase().replace(/[^a-z0-9]/g, '') || '';
-      const apolloMatch = apolloPeopleMap.get(key);
-
-      if (apolloMatch && isPersonalEmail(apolloMatch.email)) {
-        // Verify the email domain matches Apollo's own company domain
-        const emailDomain = apolloMatch.email.split('@')[1]?.toLowerCase() || '';
-        const apolloDomain = extractDomain(apolloMatch.companyDomain ? (apolloMatch.companyDomain.startsWith('http') ? apolloMatch.companyDomain : `https://${apolloMatch.companyDomain}`) : null);
-        const contactDomain = extractDomain(contact.companyWebsite);
-
-        // Email must match at least one known company domain (Apollo's or ours)
-        const matchesApollo = apolloDomain && (emailDomain === apolloDomain || emailDomain.endsWith('.' + apolloDomain));
-        const matchesStored = contactDomain && (emailDomain === contactDomain || emailDomain.endsWith('.' + contactDomain));
-        const domainOk = matchesApollo || matchesStored;
-
-        if (domainOk) {
-          await db
-            .update(schema.targetContacts)
-            .set({
-              contactName: apolloMatch.name,
-              contactEmail: apolloMatch.email,
-              contactPhone: apolloMatch.phone,
-              enrichmentStatus: "enriched",
-            })
-            .where(eq(schema.targetContacts.id, contact.id));
-          enrichedIds.add(contact.id);
-          apolloSectorMatches++;
-          continue;
-        }
-      }
-    }
-
-    console.log(`[WI]     Phase 1 matched ${apolloSectorMatches} contacts from Apollo sector search`);
-
-    // ========================================
-    // PHASE 3: Add bonus Apollo contacts not in our Exa list
-    // ========================================
-    for (const [key, person] of apolloPeopleMap) {
-      if (existingCompanyKeys.has(key)) continue; // already have this company
-
-      // Validate email domain matches Apollo's company domain before adding
-      const emailDomain = person.email.split('@')[1]?.toLowerCase() || '';
-      const apolloDomain = extractDomain(person.companyDomain ? (person.companyDomain.startsWith('http') ? person.companyDomain : `https://${person.companyDomain}`) : null);
-      if (apolloDomain && emailDomain !== apolloDomain && !emailDomain.endsWith('.' + apolloDomain)) {
-        continue; // skip cross-domain contacts
-      }
-
-      // Add as new target contact
-      try {
-        const websiteUrl = person.companyDomain
-          ? (person.companyDomain.startsWith('http') ? person.companyDomain : `https://${person.companyDomain}`)
-          : null;
-
-        await db.insert(schema.targetContacts).values({
-          sectorId,
-          companyName: person.companyName,
-          companyWebsite: websiteUrl,
-          contactName: person.name,
-          contactEmail: person.email,
-          contactPhone: person.phone,
-          ownershipType: "Unknown",
-          estimatedRevenue: null,
-          enrichmentStatus: "enriched",
-        });
-        existingCompanyKeys.add(key);
-        apolloBonusContacts++;
-      } catch (error: any) {
-        // Skip duplicates or DB errors
-      }
-    }
-
-    if (apolloBonusContacts > 0) {
-      console.log(`[WI]     Phase 2 added ${apolloBonusContacts} bonus contacts from Apollo`);
-    }
-
-    // ========================================
-    // PHASE 4: Per-company Apollo + Exa fallback for remaining unenriched
-    // ========================================
-    const remaining = toEnrich.filter(c => !enrichedIds.has(c.id));
-    for (const contact of remaining) {
-      let apolloName: string | null = null;
-      let apolloEmail: string | null = null;
-      let apolloPhone: string | null = null;
-
-      // Try per-company Apollo search
-      if (apolloApiKey) {
-        try {
-          const domain = extractDomain(contact.companyWebsite);
-          const apolloResponse = await fetch('https://api.apollo.io/v1/people/search', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Cache-Control': 'no-cache',
-              'X-Api-Key': apolloApiKey,
-            },
-            body: JSON.stringify({
-              organization_names: [contact.companyName],
-              q_organization_domains: domain || undefined,
-              person_titles: ["CEO", "Founder", "Owner", "President"],
-              per_page: 1,
-            }),
-          });
-
-          if (apolloResponse.ok) {
-            const apolloData = await apolloResponse.json();
-            const person = apolloData.people?.[0];
-            if (person) {
-              apolloName = person.name || null;
-              apolloEmail = person.email || null;
-              apolloPhone = person.phone_numbers?.[0]?.sanitized_number || null;
-            }
-          }
-        } catch (error: any) {
-          console.warn(`[WI]     Apollo per-company failed for ${contact.companyName}: ${error?.message}`);
-        }
-      }
-
-      // If Apollo gave us both name and a valid email, save it
-      if (apolloName && isValidContactEmail(apolloEmail, contact.companyWebsite)) {
-        await db
-          .update(schema.targetContacts)
-          .set({
-            contactName: apolloName,
-            contactEmail: apolloEmail,
-            contactPhone: apolloPhone,
-            enrichmentStatus: "enriched",
-          })
-          .where(eq(schema.targetContacts.id, contact.id));
-        apolloSectorMatches++;
-        continue;
-      }
-
-      // Exa multi-strategy fallback
-      try {
-        const enrichResult = await this.enrichContactViaExa(contact.companyName, contact.companyWebsite);
-        const finalName = enrichResult?.contactName || apolloName || null;
-        const rawEmail = enrichResult?.contactEmail || apolloEmail || null;
-        const finalEmail = isValidContactEmail(rawEmail, contact.companyWebsite) ? rawEmail : null;
-
-        await db
-          .update(schema.targetContacts)
-          .set({
-            contactName: finalName,
-            contactEmail: finalEmail,
-            contactPhone: apolloPhone,
-            enrichmentStatus: finalName ? "enriched" : "no_results",
-          })
-          .where(eq(schema.targetContacts.id, contact.id));
-
-        if (finalName) exaFallbacks++;
-      } catch (error: any) {
-        console.warn(`[WI]     Exa fallback failed for ${contact.companyName}: ${error?.message}`);
-        await db
-          .update(schema.targetContacts)
-          .set({
-            contactName: apolloName,
-            contactEmail: isValidContactEmail(apolloEmail, contact.companyWebsite) ? apolloEmail : null,
-            contactPhone: apolloPhone,
-            enrichmentStatus: apolloName ? "enriched" : "failed",
-          })
-          .where(eq(schema.targetContacts.id, contact.id));
-      }
-    }
-
-    const totalEnriched = apolloSectorMatches + apolloBonusContacts + exaFallbacks;
-    console.log(`[WI]   Enrichment complete: ${apolloSectorMatches} Apollo matched, ${apolloBonusContacts} Apollo bonus contacts, ${exaFallbacks} Exa fallback (${totalEnriched} total enriched)`);
   }
 
   private async enrichContactViaExa(
@@ -954,7 +1008,7 @@ Return ONLY valid JSON:
       }
     }
 
-    // Strategy 3: Search for leadership info (original approach, always run for name discovery)
+    // Strategy 3: Search for leadership info (always run for name discovery)
     try {
       const query = `"${companyName}" CEO OR founder OR owner OR president leadership team`;
       const response = await withRetry(() => fetch('https://api.exa.ai/search', {
@@ -1031,11 +1085,9 @@ IMPORTANT:
       const emailOwner = result.emailOwnerName || null;
 
       // If the email belongs to someone other than the CEO/founder, use the email owner's name
-      // Also reject Claude-extracted emails from unrelated domains
       const claudeEmailValid = claudeEmail && isPersonalEmail(claudeEmail) &&
         (!domain || claudeEmail.toLowerCase().includes(domain));
       if (emailOwner && claudeName && emailOwner !== claudeName) {
-        // Email belongs to a different person — use email owner as the contact
         foundName = emailOwner;
         foundEmail = foundEmail || (claudeEmailValid ? claudeEmail : null);
       } else {
@@ -1049,7 +1101,6 @@ IMPORTANT:
         if (nameParts.length >= 2) {
           const firstName = nameParts[0].toLowerCase();
           const lastName = nameParts[nameParts.length - 1].toLowerCase();
-          // Use the most common business email pattern
           foundEmail = `${firstName}.${lastName}@${domain}`;
           console.log(`[WI]     Inferred email pattern: ${foundEmail}`);
         }
