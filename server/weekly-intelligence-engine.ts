@@ -560,30 +560,176 @@ Return ONLY valid JSON:
 
     console.log(`[WI]   Classified ${contacts.length} companies, ${peBackedCount} PE-backed filtered`);
 
-    // Contact enrichment: Apollo first, then Exa + Claude fallback
-    const nonPeContacts = await db
+    // Re-fetch contacts with updated ownership
+    const allContacts = await db
       .select()
       .from(schema.targetContacts)
       .where(eq(schema.targetContacts.sectorId, sectorId));
+    const toEnrich = allContacts.filter(c => c.ownershipType !== "PE-Backed");
 
-    const toEnrich = nonPeContacts.filter(c => c.ownershipType !== "PE-Backed");
     const apolloApiKey = process.env.APOLLO_API_KEY;
-    let apolloSuccesses = 0;
+    let apolloSectorMatches = 0;
+    let apolloBonusContacts = 0;
     let exaFallbacks = 0;
 
+    // ========================================
+    // PHASE 1: Apollo sector-wide people search (contact-first approach)
+    // Search for CEOs/founders in this sector's industry — returns people WITH emails
+    // ========================================
+    const apolloPeopleMap = new Map<string, { name: string; email: string; phone: string | null; companyName: string; companyDomain: string | null }>();
+
+    if (apolloApiKey) {
+      // Use Claude to generate Apollo search keywords for this sector
+      const sectorData = await db
+        .select()
+        .from(schema.hotSectors)
+        .where(eq(schema.hotSectors.id, sectorId))
+        .limit(1);
+      const sectorName = sectorData[0]?.sectorName || '';
+
+      // Search Apollo for people in this sector (multiple queries to maximize results)
+      const apolloQueries = [
+        { q_keywords: sectorName, person_titles: ["CEO", "Founder", "Owner", "President", "Managing Partner"], per_page: 25 },
+        { q_keywords: sectorName, person_titles: ["CEO", "Founder"], organization_num_employees_ranges: ["20,200"], per_page: 25 },
+      ];
+
+      for (const queryParams of apolloQueries) {
+        try {
+          const apolloResponse = await fetch('https://api.apollo.io/v1/people/search', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-cache',
+              'X-Api-Key': apolloApiKey,
+            },
+            body: JSON.stringify({
+              ...queryParams,
+              reveal_personal_emails: false,
+            }),
+          });
+
+          if (apolloResponse.ok) {
+            const apolloData = await apolloResponse.json();
+            const people = apolloData.people || [];
+            console.log(`[WI]     Apollo sector search returned ${people.length} people`);
+
+            for (const person of people) {
+              if (!person.email || !person.name) continue;
+              if (!isPersonalEmail(person.email)) continue;
+
+              const companyName = person.organization?.name || '';
+              const companyDomain = person.organization?.primary_domain || person.organization?.website_url || null;
+
+              if (!companyName) continue;
+
+              const key = companyName.toLowerCase().replace(/[^a-z0-9]/g, '');
+              if (!apolloPeopleMap.has(key)) {
+                apolloPeopleMap.set(key, {
+                  name: person.name,
+                  email: person.email,
+                  phone: person.phone_numbers?.[0]?.sanitized_number || null,
+                  companyName,
+                  companyDomain,
+                });
+              }
+            }
+          }
+        } catch (error: any) {
+          console.warn(`[WI]     Apollo sector search failed: ${error?.message}`);
+        }
+      }
+      console.log(`[WI]     Apollo sector search found ${apolloPeopleMap.size} unique contacts with emails`);
+    }
+
+    // ========================================
+    // PHASE 2: Match Apollo contacts to our discovered companies
+    // ========================================
+    const enrichedIds = new Set<number>();
+    const existingCompanyKeys = new Set(toEnrich.map(c => c.companyName?.toLowerCase().replace(/[^a-z0-9]/g, '') || ''));
+
     for (const contact of toEnrich) {
+      const key = contact.companyName?.toLowerCase().replace(/[^a-z0-9]/g, '') || '';
+      const apolloMatch = apolloPeopleMap.get(key);
+
+      if (apolloMatch && isPersonalEmail(apolloMatch.email)) {
+        // Verify the email domain makes sense (use Apollo's company domain for validation)
+        const emailDomain = apolloMatch.email.split('@')[1]?.toLowerCase() || '';
+        const apolloDomain = extractDomain(apolloMatch.companyDomain ? (apolloMatch.companyDomain.startsWith('http') ? apolloMatch.companyDomain : `https://${apolloMatch.companyDomain}`) : null);
+        const contactDomain = extractDomain(contact.companyWebsite);
+
+        // Accept if email domain matches either Apollo's company domain or our stored domain
+        const domainOk = !emailDomain || !contactDomain ||
+          emailDomain === contactDomain ||
+          emailDomain === apolloDomain ||
+          emailDomain.endsWith('.' + contactDomain) ||
+          contactDomain.endsWith('.' + emailDomain);
+
+        if (domainOk) {
+          await db
+            .update(schema.targetContacts)
+            .set({
+              contactName: apolloMatch.name,
+              contactEmail: apolloMatch.email,
+              contactPhone: apolloMatch.phone,
+              enrichmentStatus: "enriched",
+            })
+            .where(eq(schema.targetContacts.id, contact.id));
+          enrichedIds.add(contact.id);
+          apolloSectorMatches++;
+          continue;
+        }
+      }
+    }
+
+    console.log(`[WI]     Phase 1 matched ${apolloSectorMatches} contacts from Apollo sector search`);
+
+    // ========================================
+    // PHASE 3: Add bonus Apollo contacts not in our Exa list
+    // ========================================
+    for (const [key, person] of apolloPeopleMap) {
+      if (existingCompanyKeys.has(key)) continue; // already have this company
+
+      // Add as new target contact
+      try {
+        const websiteUrl = person.companyDomain
+          ? (person.companyDomain.startsWith('http') ? person.companyDomain : `https://${person.companyDomain}`)
+          : null;
+
+        await db.insert(schema.targetContacts).values({
+          sectorId,
+          companyName: person.companyName,
+          companyWebsite: websiteUrl,
+          contactName: person.name,
+          contactEmail: person.email,
+          contactPhone: person.phone,
+          ownershipType: "Unknown",
+          estimatedRevenue: null,
+          enrichmentStatus: "enriched",
+        });
+        existingCompanyKeys.add(key);
+        apolloBonusContacts++;
+      } catch (error: any) {
+        // Skip duplicates or DB errors
+      }
+    }
+
+    if (apolloBonusContacts > 0) {
+      console.log(`[WI]     Phase 2 added ${apolloBonusContacts} bonus contacts from Apollo`);
+    }
+
+    // ========================================
+    // PHASE 4: Per-company Apollo + Exa fallback for remaining unenriched
+    // ========================================
+    const remaining = toEnrich.filter(c => !enrichedIds.has(c.id));
+    for (const contact of remaining) {
       let apolloName: string | null = null;
       let apolloEmail: string | null = null;
       let apolloPhone: string | null = null;
 
-      // Step A: Try Apollo (if API key exists)
+      // Try per-company Apollo search
       if (apolloApiKey) {
         try {
-          let domain = '';
-          try {
-            domain = new URL(contact.companyWebsite || '').hostname.replace('www.', '');
-          } catch { /* no valid URL */ }
-
+          const domain = extractDomain(contact.companyWebsite);
           const apolloResponse = await fetch('https://api.apollo.io/v1/people/search', {
             method: 'POST',
             headers: {
@@ -609,11 +755,11 @@ Return ONLY valid JSON:
             }
           }
         } catch (error: any) {
-          console.warn(`[WI]   Apollo failed for ${contact.companyName}: ${error?.message}`);
+          console.warn(`[WI]     Apollo per-company failed for ${contact.companyName}: ${error?.message}`);
         }
       }
 
-      // If Apollo gave us both name and a valid company email, we're done
+      // If Apollo gave us both name and a valid email, save it
       if (apolloName && isValidContactEmail(apolloEmail, contact.companyWebsite)) {
         await db
           .update(schema.targetContacts)
@@ -624,14 +770,13 @@ Return ONLY valid JSON:
             enrichmentStatus: "enriched",
           })
           .where(eq(schema.targetContacts.id, contact.id));
-        apolloSuccesses++;
+        apolloSectorMatches++;
         continue;
       }
 
-      // Step B: Exa multi-strategy enrichment (finds name + email via site scrape, web search, leadership search, pattern inference)
+      // Exa multi-strategy fallback
       try {
         const enrichResult = await this.enrichContactViaExa(contact.companyName, contact.companyWebsite);
-        // Merge: prefer Apollo name if Exa didn't find one, prefer found email over inferred
         const finalName = enrichResult?.contactName || apolloName || null;
         const rawEmail = enrichResult?.contactEmail || apolloEmail || null;
         const finalEmail = isValidContactEmail(rawEmail, contact.companyWebsite) ? rawEmail : null;
@@ -648,8 +793,7 @@ Return ONLY valid JSON:
 
         if (finalName) exaFallbacks++;
       } catch (error: any) {
-        console.warn(`[WI]   Exa enrichment failed for ${contact.companyName}: ${error?.message}`);
-        // Still save Apollo data if we had any
+        console.warn(`[WI]     Exa fallback failed for ${contact.companyName}: ${error?.message}`);
         await db
           .update(schema.targetContacts)
           .set({
@@ -662,7 +806,8 @@ Return ONLY valid JSON:
       }
     }
 
-    console.log(`[WI]   Enrichment complete: ${apolloSuccesses} via Apollo (full), ${exaFallbacks} via Exa/combined, ${toEnrich.length - apolloSuccesses - exaFallbacks} unresolved`);
+    const totalEnriched = apolloSectorMatches + apolloBonusContacts + exaFallbacks;
+    console.log(`[WI]   Enrichment complete: ${apolloSectorMatches} Apollo matched, ${apolloBonusContacts} Apollo bonus contacts, ${exaFallbacks} Exa fallback (${totalEnriched} total enriched)`);
   }
 
   private async enrichContactViaExa(
