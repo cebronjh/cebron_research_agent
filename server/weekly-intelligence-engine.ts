@@ -70,6 +70,33 @@ function isPersonalEmail(email: string | null): boolean {
   return !GENERIC_EMAIL_PREFIXES.test(email);
 }
 
+function extractDomain(url: string | null): string {
+  if (!url) return '';
+  try {
+    return new URL(url).hostname.replace('www.', '');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Check if an email is a valid personal contact email for a given company.
+ * Rejects generic prefixes AND emails from unrelated domains.
+ */
+function isValidContactEmail(email: string | null, companyWebsite: string | null): boolean {
+  if (!email || !isPersonalEmail(email)) return false;
+  const companyDomain = extractDomain(companyWebsite);
+  if (!companyDomain) return true; // can't verify domain, accept if personal
+  const emailDomain = email.split('@')[1]?.toLowerCase() || '';
+  // Accept if email domain matches company domain
+  if (emailDomain === companyDomain) return true;
+  // Accept if one contains the other (e.g., company "acme.com" and email "user@mail.acme.com")
+  if (emailDomain.endsWith('.' + companyDomain) || companyDomain.endsWith('.' + emailDomain)) return true;
+  // Reject — email is from a different organization
+  console.log(`[WI]     Rejected cross-domain email: ${email} (expected @${companyDomain})`);
+  return false;
+}
+
 export class WeeklyIntelligenceEngine {
   async runWeeklyScan(): Promise<number> {
     const monday = getMonday(new Date());
@@ -586,8 +613,8 @@ Return ONLY valid JSON:
         }
       }
 
-      // If Apollo gave us both name and a personal email, we're done
-      if (apolloName && isPersonalEmail(apolloEmail)) {
+      // If Apollo gave us both name and a valid company email, we're done
+      if (apolloName && isValidContactEmail(apolloEmail, contact.companyWebsite)) {
         await db
           .update(schema.targetContacts)
           .set({
@@ -607,7 +634,7 @@ Return ONLY valid JSON:
         // Merge: prefer Apollo name if Exa didn't find one, prefer found email over inferred
         const finalName = enrichResult?.contactName || apolloName || null;
         const rawEmail = enrichResult?.contactEmail || apolloEmail || null;
-        const finalEmail = isPersonalEmail(rawEmail) ? rawEmail : null;
+        const finalEmail = isValidContactEmail(rawEmail, contact.companyWebsite) ? rawEmail : null;
 
         await db
           .update(schema.targetContacts)
@@ -627,7 +654,7 @@ Return ONLY valid JSON:
           .update(schema.targetContacts)
           .set({
             contactName: apolloName,
-            contactEmail: isPersonalEmail(apolloEmail) ? apolloEmail : null,
+            contactEmail: isValidContactEmail(apolloEmail, contact.companyWebsite) ? apolloEmail : null,
             contactPhone: apolloPhone,
             enrichmentStatus: apolloName ? "enriched" : "failed",
           })
@@ -820,13 +847,16 @@ IMPORTANT:
       const emailOwner = result.emailOwnerName || null;
 
       // If the email belongs to someone other than the CEO/founder, use the email owner's name
+      // Also reject Claude-extracted emails from unrelated domains
+      const claudeEmailValid = claudeEmail && isPersonalEmail(claudeEmail) &&
+        (!domain || claudeEmail.toLowerCase().includes(domain));
       if (emailOwner && claudeName && emailOwner !== claudeName) {
         // Email belongs to a different person — use email owner as the contact
         foundName = emailOwner;
-        foundEmail = foundEmail || (isPersonalEmail(claudeEmail) ? claudeEmail : null);
+        foundEmail = foundEmail || (claudeEmailValid ? claudeEmail : null);
       } else {
         foundName = claudeName || foundName;
-        foundEmail = foundEmail || (isPersonalEmail(claudeEmail) ? claudeEmail : null);
+        foundEmail = foundEmail || (claudeEmailValid ? claudeEmail : null);
       }
 
       // Strategy 4: Infer email from name + domain if we have a name but no email
