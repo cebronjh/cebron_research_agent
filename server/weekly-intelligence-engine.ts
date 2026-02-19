@@ -515,7 +515,9 @@ Return ONLY valid JSON:
     let exaFallbacks = 0;
 
     for (const contact of toEnrich) {
-      let enriched = false;
+      let apolloName: string | null = null;
+      let apolloEmail: string | null = null;
+      let apolloPhone: string | null = null;
 
       // Step A: Try Apollo (if API key exists)
       if (apolloApiKey) {
@@ -543,18 +545,10 @@ Return ONLY valid JSON:
           if (apolloResponse.ok) {
             const apolloData = await apolloResponse.json();
             const person = apolloData.people?.[0];
-            if (person && (person.email || person.name)) {
-              await db
-                .update(schema.targetContacts)
-                .set({
-                  contactName: person.name || null,
-                  contactEmail: person.email || null,
-                  contactPhone: person.phone_numbers?.[0]?.sanitized_number || null,
-                  enrichmentStatus: "enriched",
-                })
-                .where(eq(schema.targetContacts.id, contact.id));
-              enriched = true;
-              apolloSuccesses++;
+            if (person) {
+              apolloName = person.name || null;
+              apolloEmail = person.email || null;
+              apolloPhone = person.phone_numbers?.[0]?.sanitized_number || null;
             }
           }
         } catch (error: any) {
@@ -562,87 +556,216 @@ Return ONLY valid JSON:
         }
       }
 
-      // Step B: Exa + Claude fallback if Apollo didn't enrich
-      if (!enriched) {
-        try {
-          const enrichResult = await this.enrichContactViaExa(contact.companyName, contact.companyWebsite);
-          if (enrichResult) {
-            await db
-              .update(schema.targetContacts)
-              .set({
-                contactName: enrichResult.contactName || null,
-                contactEmail: enrichResult.contactEmail || null,
-                enrichmentStatus: enrichResult.contactName ? "enriched" : "no_results",
-              })
-              .where(eq(schema.targetContacts.id, contact.id));
-            if (enrichResult.contactName) exaFallbacks++;
-          } else {
-            await db
-              .update(schema.targetContacts)
-              .set({ enrichmentStatus: "no_results" })
-              .where(eq(schema.targetContacts.id, contact.id));
-          }
-        } catch (error: any) {
-          console.warn(`[WI]   Exa fallback failed for ${contact.companyName}: ${error?.message}`);
-          await db
-            .update(schema.targetContacts)
-            .set({ enrichmentStatus: "failed" })
-            .where(eq(schema.targetContacts.id, contact.id));
-        }
+      // If Apollo gave us both name and email, we're done
+      if (apolloName && apolloEmail) {
+        await db
+          .update(schema.targetContacts)
+          .set({
+            contactName: apolloName,
+            contactEmail: apolloEmail,
+            contactPhone: apolloPhone,
+            enrichmentStatus: "enriched",
+          })
+          .where(eq(schema.targetContacts.id, contact.id));
+        apolloSuccesses++;
+        continue;
+      }
+
+      // Step B: Exa multi-strategy enrichment (finds name + email via site scrape, web search, leadership search, pattern inference)
+      try {
+        const enrichResult = await this.enrichContactViaExa(contact.companyName, contact.companyWebsite);
+        // Merge: prefer Apollo name if Exa didn't find one, prefer found email over inferred
+        const finalName = enrichResult?.contactName || apolloName || null;
+        const finalEmail = enrichResult?.contactEmail || apolloEmail || null;
+
+        await db
+          .update(schema.targetContacts)
+          .set({
+            contactName: finalName,
+            contactEmail: finalEmail,
+            contactPhone: apolloPhone,
+            enrichmentStatus: finalName ? "enriched" : "no_results",
+          })
+          .where(eq(schema.targetContacts.id, contact.id));
+
+        if (finalName) exaFallbacks++;
+      } catch (error: any) {
+        console.warn(`[WI]   Exa enrichment failed for ${contact.companyName}: ${error?.message}`);
+        // Still save Apollo data if we had any
+        await db
+          .update(schema.targetContacts)
+          .set({
+            contactName: apolloName,
+            contactEmail: apolloEmail,
+            contactPhone: apolloPhone,
+            enrichmentStatus: apolloName ? "enriched" : "failed",
+          })
+          .where(eq(schema.targetContacts.id, contact.id));
       }
     }
 
-    console.log(`[WI]   Enrichment complete: ${apolloSuccesses} via Apollo, ${exaFallbacks} via Exa, ${toEnrich.length - apolloSuccesses - exaFallbacks} unresolved`);
+    console.log(`[WI]   Enrichment complete: ${apolloSuccesses} via Apollo (full), ${exaFallbacks} via Exa/combined, ${toEnrich.length - apolloSuccesses - exaFallbacks} unresolved`);
   }
 
   private async enrichContactViaExa(
     companyName: string,
     companyWebsite: string | null
   ): Promise<{ contactName: string | null; contactEmail: string | null } | null> {
-    // Search Exa for leadership info
-    const query = `"${companyName}" CEO OR founder OR owner OR president leadership team`;
+    let domain = '';
+    try {
+      domain = new URL(companyWebsite || '').hostname.replace('www.', '');
+    } catch { /* no valid URL */ }
 
-    const response = await withRetry(() => fetch('https://api.exa.ai/search', {
-      method: 'POST',
-      headers: {
-        'x-api-key': process.env.EXA_API_KEY || '',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query,
-        numResults: 3,
-        type: 'neural',
-        useAutoprompt: false,
-        contents: {
-          text: { maxCharacters: 1500 },
+    let allSearchText = '';
+    let foundEmail: string | null = null;
+    let foundName: string | null = null;
+
+    // Strategy 1: Search the company's own website for contact/about/team pages
+    if (domain) {
+      try {
+        const siteResponse = await withRetry(() => fetch('https://api.exa.ai/search', {
+          method: 'POST',
+          headers: {
+            'x-api-key': process.env.EXA_API_KEY || '',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            query: `${companyName} contact team about leadership`,
+            numResults: 3,
+            type: 'neural',
+            useAutoprompt: false,
+            includeDomains: [domain],
+            contents: {
+              text: { maxCharacters: 2000 },
+            },
+          }),
+        }), `Exa site scrape for ${companyName}`);
+
+        if (siteResponse.ok) {
+          const siteData = await siteResponse.json();
+          if (siteData.results?.length > 0) {
+            const siteText = siteData.results
+              .map((r: any) => `Source: ${r.url}\n${r.text || ''}`)
+              .join('\n---\n');
+            allSearchText += siteText + '\n===\n';
+
+            // Quick regex check for emails in the text
+            const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+            const rawEmails = siteText.match(emailRegex) || [];
+            // Filter to domain emails, exclude generic ones
+            const domainEmails = rawEmails.filter(e =>
+              e.includes(domain) &&
+              !e.match(/^(info|support|contact|hello|sales|admin|noreply|no-reply|office|general|team|help|careers|jobs|hr|billing|marketing|press|media)@/i)
+            );
+            if (domainEmails.length > 0) {
+              foundEmail = domainEmails[0];
+              console.log(`[WI]     Found email via site scrape: ${foundEmail}`);
+            }
+          }
+        }
+      } catch (error: any) {
+        console.warn(`[WI]     Site scrape failed for ${companyName}: ${error?.message}`);
+      }
+    }
+
+    // Strategy 2: Search the web for published emails at this domain
+    if (!foundEmail && domain) {
+      try {
+        const emailResponse = await withRetry(() => fetch('https://api.exa.ai/search', {
+          method: 'POST',
+          headers: {
+            'x-api-key': process.env.EXA_API_KEY || '',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            query: `"@${domain}" CEO OR founder OR owner OR president`,
+            numResults: 3,
+            type: 'neural',
+            useAutoprompt: false,
+            contents: {
+              text: { maxCharacters: 1500 },
+            },
+          }),
+        }), `Exa email search for @${domain}`);
+
+        if (emailResponse.ok) {
+          const emailData = await emailResponse.json();
+          if (emailData.results?.length > 0) {
+            const emailText = emailData.results
+              .map((r: any) => `Source: ${r.url}\n${r.text || ''}`)
+              .join('\n---\n');
+            allSearchText += emailText + '\n===\n';
+
+            // Extract domain emails
+            const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+            const rawEmails = emailText.match(emailRegex) || [];
+            const domainEmails = rawEmails.filter(e =>
+              e.includes(domain) &&
+              !e.match(/^(info|support|contact|hello|sales|admin|noreply|no-reply|office|general|team|help|careers|jobs|hr|billing|marketing|press|media)@/i)
+            );
+            if (domainEmails.length > 0 && !foundEmail) {
+              foundEmail = domainEmails[0];
+              console.log(`[WI]     Found email via web search: ${foundEmail}`);
+            }
+          }
+        }
+      } catch (error: any) {
+        console.warn(`[WI]     Email search failed for ${companyName}: ${error?.message}`);
+      }
+    }
+
+    // Strategy 3: Search for leadership info (original approach, always run for name discovery)
+    try {
+      const query = `"${companyName}" CEO OR founder OR owner OR president leadership team`;
+      const response = await withRetry(() => fetch('https://api.exa.ai/search', {
+        method: 'POST',
+        headers: {
+          'x-api-key': process.env.EXA_API_KEY || '',
+          'Content-Type': 'application/json',
         },
-      }),
-    }), `Exa contact search for ${companyName}`);
+        body: JSON.stringify({
+          query,
+          numResults: 3,
+          type: 'neural',
+          useAutoprompt: false,
+          contents: {
+            text: { maxCharacters: 1500 },
+          },
+        }),
+      }), `Exa leadership search for ${companyName}`);
 
-    if (!response.ok) return null;
+      if (response.ok) {
+        const data = await response.json();
+        if (data.results?.length > 0) {
+          const leaderText = data.results
+            .map((r: any) => `Source: ${r.url}\n${r.text || ''}`)
+            .join('\n---\n');
+          allSearchText += leaderText;
+        }
+      }
+    } catch (error: any) {
+      console.warn(`[WI]     Leadership search failed for ${companyName}: ${error?.message}`);
+    }
 
-    const data = await response.json();
-    if (!data.results || data.results.length === 0) return null;
+    if (!allSearchText.trim()) return null;
 
-    // Combine search result text for Claude extraction
-    const searchText = data.results
-      .map((r: any) => `Source: ${r.url}\n${r.text || ''}`)
-      .join('\n---\n')
-      .substring(0, 3000);
-
+    // Use Claude to extract name + email from all collected text
     const prompt = `From these search results about "${companyName}", extract the CEO, founder, or owner's contact information.
 
 SEARCH RESULTS:
-${searchText}
+${allSearchText.substring(0, 4000)}
 
 Return ONLY valid JSON:
 {
   "contactName": "Full Name of CEO/Founder/Owner or null if not found",
   "contactTitle": "Their title or null",
-  "contactEmail": "Their email or null if not found"
+  "contactEmail": "Their email address or null if not found"
 }
 
-Only return real information you can find in the text. Do NOT make up names or emails.`;
+IMPORTANT:
+- Only return real information you can find in the text. Do NOT make up names or emails.
+- Look carefully for email addresses in the text — they may appear in contact sections, footers, press releases, or bios.
+- If you find multiple people, prefer the CEO or founder.`;
 
     const claudeResponse = await withRetry(() => anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
@@ -661,9 +784,25 @@ Only return real information you can find in the text. Do NOT make up names or e
 
     try {
       const result = JSON.parse(jsonMatch[0]);
+      foundName = result.contactName || foundName;
+      // Prefer regex-found email (more reliable), fall back to Claude-extracted
+      foundEmail = foundEmail || result.contactEmail || null;
+
+      // Strategy 4: Infer email from name + domain if we have a name but no email
+      if (foundName && !foundEmail && domain) {
+        const nameParts = foundName.trim().split(/\s+/);
+        if (nameParts.length >= 2) {
+          const firstName = nameParts[0].toLowerCase();
+          const lastName = nameParts[nameParts.length - 1].toLowerCase();
+          // Use the most common business email pattern
+          foundEmail = `${firstName}.${lastName}@${domain}`;
+          console.log(`[WI]     Inferred email pattern: ${foundEmail}`);
+        }
+      }
+
       return {
-        contactName: result.contactName || null,
-        contactEmail: result.contactEmail || null,
+        contactName: foundName || null,
+        contactEmail: foundEmail || null,
       };
     } catch {
       return null;
