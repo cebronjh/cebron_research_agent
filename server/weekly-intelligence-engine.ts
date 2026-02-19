@@ -144,8 +144,17 @@ export class WeeklyIntelligenceEngine {
         const companies = await this.discoverCompaniesForSector(sector);
         console.log(`[WI]   Found ${companies.length} companies for ${sector.name}`);
 
-        // Save as target_contacts
+        // Save as target_contacts (skip if company name already exists in this sector)
+        const existingContacts = await db
+          .select({ companyName: schema.targetContacts.companyName })
+          .from(schema.targetContacts)
+          .where(eq(schema.targetContacts.sectorId, sector.dbId));
+        const existingNames = new Set(existingContacts.map(c => c.companyName?.toLowerCase().replace(/[^a-z0-9]/g, '')));
+
         for (const company of companies) {
+          const key = company.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+          if (existingNames.has(key)) continue;
+          existingNames.add(key);
           await db.insert(schema.targetContacts).values({
             sectorId: sector.dbId,
             companyName: company.title,
@@ -370,7 +379,21 @@ Return ONLY valid JSON with this exact structure:
     const rawCompanies = Array.from(unique.values());
 
     // Use Claude to extract real company names from page titles/URLs/text
-    return await this.extractCompanyNames(rawCompanies);
+    const namedCompanies = await this.extractCompanyNames(rawCompanies);
+
+    // Deduplicate by normalized company name (after extraction, different URLs may resolve to the same company)
+    const seen = new Map<string, DiscoveredCompany>();
+    for (const company of namedCompanies) {
+      const key = company.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (!seen.has(key)) {
+        seen.set(key, company);
+      }
+    }
+    const deduped = Array.from(seen.values());
+    if (deduped.length < namedCompanies.length) {
+      console.log(`[WI]   Deduped ${namedCompanies.length} → ${deduped.length} companies by name`);
+    }
+    return deduped;
   }
 
   private async extractCompanyNames(companies: DiscoveredCompany[]): Promise<DiscoveredCompany[]> {
@@ -765,13 +788,15 @@ Return ONLY valid JSON:
 {
   "contactName": "Full Name of CEO/Founder/Owner or null if not found",
   "contactTitle": "Their title or null",
-  "contactEmail": "Their email address or null if not found"
+  "contactEmail": "Their email address or null if not found",
+  "emailOwnerName": "Name of the person whose email this is, if different from contactName, or null"
 }
 
 IMPORTANT:
 - Only return real information you can find in the text. Do NOT make up names or emails.
 - Look carefully for email addresses in the text — they may appear in contact sections, footers, press releases, or bios.
-- If you find multiple people, prefer the CEO or founder.`;
+- If you find multiple people, prefer the CEO or founder.
+- If the email you found belongs to someone other than the CEO/founder, put their name in emailOwnerName.`;
 
     const claudeResponse = await withRetry(() => anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
@@ -790,10 +815,19 @@ IMPORTANT:
 
     try {
       const result = JSON.parse(jsonMatch[0]);
-      foundName = result.contactName || foundName;
-      // Prefer regex-found email (more reliable), fall back to Claude-extracted — but only personal emails
+      const claudeName = result.contactName || null;
       const claudeEmail = result.contactEmail || null;
-      foundEmail = foundEmail || (isPersonalEmail(claudeEmail) ? claudeEmail : null);
+      const emailOwner = result.emailOwnerName || null;
+
+      // If the email belongs to someone other than the CEO/founder, use the email owner's name
+      if (emailOwner && claudeName && emailOwner !== claudeName) {
+        // Email belongs to a different person — use email owner as the contact
+        foundName = emailOwner;
+        foundEmail = foundEmail || (isPersonalEmail(claudeEmail) ? claudeEmail : null);
+      } else {
+        foundName = claudeName || foundName;
+        foundEmail = foundEmail || (isPersonalEmail(claudeEmail) ? claudeEmail : null);
+      }
 
       // Strategy 4: Infer email from name + domain if we have a name but no email
       if (foundName && !foundEmail && domain) {
