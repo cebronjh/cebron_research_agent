@@ -92,6 +92,9 @@ const BLOCKED_EMAIL_DOMAINS = new Set([
   'saastr.com', 'pulse2.com', 'prnewswire.com', 'businesswire.com', 'globenewswire.com',
   'greatplacetowork.com', 'inc.com', 'entrepreneur.com', 'hbr.org',
   'lightercapital.com', 'tidemarkcap.com', 'bizjournals.com',
+  'chiefexecutive.net', 'ceoworld.biz', 'ceoforum.com',
+  'companyweek.com', 'roundaboutmadison.com',
+  'sustainment.com', 'thomasnet.com', 'mfgday.com',
   'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com',
 ]);
 
