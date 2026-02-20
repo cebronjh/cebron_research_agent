@@ -601,19 +601,19 @@ Confidence levels:
   }
 
   // Public method for manual approvals
-  async researchCompanyById(queueId: number): Promise<void> {
+  async researchCompanyById(queueId: number, strategy: 'buy-side' | 'sell-side' | 'dual' = 'buy-side'): Promise<void> {
     console.log(`[Agent] Researching company from queue ${queueId}`);
-    
+
     const [queueItem] = await db
       .select()
       .from(discoveryQueue)
       .where(eq(discoveryQueue.id, queueId))
       .limit(1);
-    
+
     if (!queueItem) {
       throw new Error(`Queue item ${queueId} not found`);
     }
-    
+
     const company = {
       title: queueItem.companyName,
       url: queueItem.websiteUrl,
@@ -622,8 +622,91 @@ Confidence levels:
       geographicFocus: queueItem.geographicFocus,
       queueId: queueItem.id,
     };
-    
-    await this.researchCompany(company, queueItem.workflowId, 'buy-side');
+
+    await this.researchCompany(company, queueItem.workflowId, strategy);
+  }
+
+  // Direct research: skip discovery/scoring, research known companies immediately
+  async runDirectResearch(
+    companies: Array<{ name: string; websiteUrl?: string }>,
+    strategy: 'buy-side' | 'sell-side' | 'dual' = 'buy-side'
+  ): Promise<number> {
+    console.log(`[Agent] Starting direct research for ${companies.length} companies (strategy: ${strategy})`);
+
+    const { storage } = await import("./storage");
+
+    const workflow = await storage.createWorkflow({
+      status: "running",
+      triggerType: "direct",
+      searchCriteria: { companies },
+      companiesFound: companies.length,
+      companiesScored: companies.length,
+      companiesAutoApproved: companies.length,
+      companiesManualReview: 0,
+      companiesResearched: 0,
+    });
+
+    try {
+      // Create pre-approved queue entries for each company
+      const queueIds: number[] = [];
+      for (const company of companies) {
+        const queueItem = await storage.addToDiscoveryQueue({
+          workflowId: workflow.id,
+          companyName: company.name,
+          websiteUrl: company.websiteUrl || `https://${company.name.toLowerCase().replace(/\s+/g, '')}.com`,
+          description: null,
+          agentScore: 10,
+          scoringReason: "Direct research request",
+          confidence: "High",
+          estimatedRevenue: null,
+          industry: null,
+          geographicFocus: null,
+          approvalStatus: "auto_approved",
+          autoApprovalReason: "Direct research request",
+          approvedAt: new Date(),
+        });
+        queueIds.push(queueItem.id);
+      }
+
+      // Research in parallel batches of 3
+      let researched = 0;
+      const BATCH_SIZE = 3;
+
+      for (let i = 0; i < queueIds.length; i += BATCH_SIZE) {
+        const batch = queueIds.slice(i, i + BATCH_SIZE);
+        console.log(`[Agent] Direct research batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(queueIds.length / BATCH_SIZE)}`);
+
+        const results = await Promise.allSettled(
+          batch.map(queueId => this.researchCompanyById(queueId, strategy))
+        );
+
+        for (let j = 0; j < results.length; j++) {
+          if (results[j].status === 'fulfilled') {
+            researched++;
+          } else {
+            console.error(`[Agent] Direct research failed for queue ${batch[j]}:`, (results[j] as PromiseRejectedResult).reason);
+          }
+        }
+
+        await storage.updateWorkflow(workflow.id, { companiesResearched: researched });
+      }
+
+      await storage.updateWorkflow(workflow.id, {
+        companiesResearched: researched,
+        status: "completed",
+        completedAt: new Date(),
+      });
+
+      console.log(`[Agent] Direct research workflow ${workflow.id} complete: ${researched}/${companies.length} companies researched`);
+      return workflow.id;
+    } catch (error: any) {
+      console.error(`[Agent] Direct research workflow ${workflow.id} FAILED:`, error?.message || error);
+      await storage.updateWorkflow(workflow.id, {
+        status: "failed",
+        completedAt: new Date(),
+      });
+      throw error;
+    }
   }
 
   private async researchCompany(company: any, workflowId: number, strategy: 'buy-side' | 'sell-side' | 'dual'): Promise<void> {

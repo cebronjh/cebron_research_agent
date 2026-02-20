@@ -429,6 +429,45 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
+  // Direct company research (skip discovery, research known companies)
+  app.post("/api/research/direct", async (req, res) => {
+    try {
+      const { companies, strategy } = req.body;
+      if (!Array.isArray(companies) || companies.length === 0) {
+        return res.status(400).json({ error: "companies array is required" });
+      }
+      if (companies.length > 25) {
+        return res.status(400).json({ error: "Maximum 25 companies per request" });
+      }
+      for (const c of companies) {
+        if (!c.name || typeof c.name !== "string" || c.name.trim().length === 0) {
+          return res.status(400).json({ error: "Each company must have a non-empty name" });
+        }
+      }
+
+      const validStrategy = ["buy-side", "sell-side", "dual"].includes(strategy) ? strategy : "buy-side";
+      const cleanCompanies = companies.map((c: any) => ({
+        name: c.name.trim(),
+        websiteUrl: c.websiteUrl?.trim() || undefined,
+      }));
+
+      console.log(`[API] Starting direct research for ${cleanCompanies.length} companies (strategy: ${validStrategy})`);
+
+      agentOrchestrator.runDirectResearch(cleanCompanies, validStrategy)
+        .then(workflowId => {
+          console.log(`[API] Direct research workflow ${workflowId} completed`);
+        })
+        .catch(error => {
+          console.error(`[API] Direct research failed:`, error);
+        });
+
+      res.json({ message: "Research started", workflowId: null });
+    } catch (error) {
+      console.error("Error starting direct research:", error);
+      res.status(500).json({ error: "Failed to start direct research" });
+    }
+  });
+
   // Clear all search data (keeps configs)
   app.delete("/api/data/clear-all", async (req, res) => {
     try {

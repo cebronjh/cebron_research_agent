@@ -89,7 +89,7 @@ export class ApolloEnrichment {
     companyName: string;
     title?: string;
   }): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/people/search`, {
+    const response = await fetch(`${this.baseUrl}/mixed_people/search`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -167,8 +167,9 @@ export class ApolloEnrichment {
       const title = match[2].trim();
 
       // Try to find LinkedIn URL for this contact
+      const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const linkedinMatch = sectionText.match(
-        new RegExp(`${name}[\\s\\S]*?LinkedIn.*?(https?://[^\\s)]+)`, 'i')
+        new RegExp(`${escapedName}[\\s\\S]*?LinkedIn.*?(https?://[^\\s)]+)`, 'i')
       );
 
       decisionMakers.push({

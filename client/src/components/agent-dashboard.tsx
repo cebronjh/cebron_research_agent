@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
@@ -32,20 +32,66 @@ import {
   Calendar,
   ChevronDown,
   ChevronUp,
+  Trash2,
+  Download,
+  Clock,
 } from "lucide-react";
 
 export function AgentDashboard() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [, setLocation] = useLocation();
-  
+  const [configToLoad, setConfigToLoad] = useState<any>(null);
+
   // Fetch active workflows
   const { data: workflows } = useQuery({
     queryKey: ["/api/workflows"],
   });
-  
+
+  // Fetch saved configurations
+  const { data: savedConfigs } = useQuery({
+    queryKey: ["/api/agent-configs"],
+  });
+
   // Fetch pending approvals count
   const { data: pendingApprovals } = useQuery({
     queryKey: ["/api/discovery-queue/pending"],
+  });
+
+  const deleteConfig = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/agent-configs/${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to delete configuration");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agent-configs"] });
+      toast({ title: "Configuration deleted" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to delete", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const runSavedConfig = useMutation({
+    mutationFn: async (configId: number) => {
+      const res = await fetch(`/api/discovery/run/${configId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!res.ok) throw new Error("Failed to start discovery");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
+      toast({
+        title: "Discovery started",
+        description: "The agent is now searching for companies.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to start discovery", description: error.message, variant: "destructive" });
+    },
   });
 
   const pendingCount = pendingApprovals?.length || 0;
@@ -73,24 +119,190 @@ export function AgentDashboard() {
         </div>
       </div>
 
-      {/* Active Workflow Status */}
+      {/* Recent Runs */}
       {workflows && workflows.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Active Workflow</CardTitle>
-            <CardDescription>
-              Most recent discovery run
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <WorkflowStatus workflow={workflows[0]} />
-          </CardContent>
-        </Card>
+        <RecentRuns workflows={workflows} />
+      )}
+
+      {/* Saved Configurations */}
+      {savedConfigs && savedConfigs.length > 0 && (
+        <SavedConfigurations
+          configs={savedConfigs}
+          onLoad={setConfigToLoad}
+          onRun={(id) => runSavedConfig.mutate(id)}
+          onDelete={(id) => {
+            if (window.confirm("Delete this configuration?")) {
+              deleteConfig.mutate(id);
+            }
+          }}
+          isRunning={runSavedConfig.isPending}
+        />
       )}
 
       {/* Agent Configuration */}
-      <AgentConfigCard />
+      <AgentConfigCard
+        configToLoad={configToLoad}
+        onConfigLoaded={() => setConfigToLoad(null)}
+      />
     </div>
+  );
+}
+
+function SavedConfigurations({
+  configs,
+  onLoad,
+  onRun,
+  onDelete,
+  isRunning,
+}: {
+  configs: any[];
+  onLoad: (config: any) => void;
+  onRun: (id: number) => void;
+  onDelete: (id: number) => void;
+  isRunning: boolean;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Download className="h-5 w-5" />
+          Saved Configurations
+        </CardTitle>
+        <CardDescription>
+          {configs.length} saved search {configs.length === 1 ? "configuration" : "configurations"}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {configs.map((cfg: any) => {
+          const sc = cfg.searchCriteria || {};
+          return (
+            <div
+              key={cfg.id}
+              className="flex items-center justify-between p-3 rounded-lg border bg-muted/30 hover:bg-muted/50 transition-colors"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-medium truncate">{cfg.name}</span>
+                  {sc.industry && (
+                    <Badge variant="outline" className="text-xs">{sc.industry}</Badge>
+                  )}
+                  {sc.revenueRange && (
+                    <Badge variant="outline" className="text-xs">{sc.revenueRange}</Badge>
+                  )}
+                  {sc.strategy && (
+                    <Badge variant="secondary" className="text-xs capitalize">{sc.strategy}</Badge>
+                  )}
+                  {sc.peFilter && sc.peFilter !== "both" && (
+                    <Badge variant="secondary" className="text-xs">{sc.peFilter}</Badge>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-1 ml-2 shrink-0">
+                <Button size="sm" variant="ghost" onClick={() => onLoad(cfg)}>
+                  <Download className="h-3.5 w-3.5 mr-1" />
+                  Load
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => onRun(cfg.id)}
+                  disabled={isRunning}
+                >
+                  <PlayCircle className="h-3.5 w-3.5 mr-1" />
+                  Run
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-destructive hover:text-destructive"
+                  onClick={() => onDelete(cfg.id)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          );
+        })}
+      </CardContent>
+    </Card>
+  );
+}
+
+function RecentRuns({ workflows }: { workflows: any[] }) {
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case "completed": return "bg-green-500";
+      case "running": case "researching": return "bg-blue-500 animate-pulse";
+      case "awaiting_approval": return "bg-orange-500";
+      case "failed": return "bg-red-500";
+      default: return "bg-gray-500";
+    }
+  };
+
+  const latestWorkflow = workflows[0];
+  const recentWorkflows = workflows.slice(0, 5);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Clock className="h-5 w-5" />
+          Recent Runs
+        </CardTitle>
+        <CardDescription>
+          Latest discovery workflow runs
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Show full details for actively running workflow */}
+        {(latestWorkflow.status === "running" || latestWorkflow.status === "researching") && (
+          <>
+            <WorkflowStatus workflow={latestWorkflow} />
+            <Separator />
+          </>
+        )}
+
+        {/* Compact list of recent runs */}
+        <div className="space-y-1">
+          {recentWorkflows.map((wf: any) => (
+            <div key={wf.id}>
+              <button
+                className="w-full flex items-center justify-between p-2.5 rounded-lg hover:bg-muted/50 transition-colors text-left"
+                onClick={() => setExpandedId(expandedId === wf.id ? null : wf.id)}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className={`h-2.5 w-2.5 rounded-full shrink-0 ${getStatusColor(wf.status)}`} />
+                  <span className="text-sm font-medium truncate capitalize">{wf.status}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {new Date(wf.createdAt).toLocaleDateString()}{" "}
+                    {new Date(wf.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span>{wf.companiesFound} found</span>
+                    <span className="text-green-600">{wf.companiesAutoApproved} approved</span>
+                    <span className="text-blue-600">{wf.companiesResearched} researched</span>
+                  </div>
+                  {expandedId === wf.id ? (
+                    <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                  )}
+                </div>
+              </button>
+              {expandedId === wf.id && (
+                <div className="ml-5 mt-1 mb-2 p-3 rounded-lg border bg-muted/20">
+                  <WorkflowStatus workflow={wf} />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -180,12 +392,18 @@ function WorkflowStatus({ workflow }: { workflow: any }) {
   );
 }
 
-function AgentConfigCard() {
+function AgentConfigCard({
+  configToLoad,
+  onConfigLoaded,
+}: {
+  configToLoad?: any;
+  onConfigLoaded?: () => void;
+}) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [showOptionalFilters, setShowOptionalFilters] = useState(false);
   const [savedConfigId, setSavedConfigId] = useState<number | null>(null);
-  
+
   const [config, setConfig] = useState({
     name: "Healthcare Midwest Discovery",
     query: "healthcare medical",
@@ -200,12 +418,42 @@ function AgentConfigCard() {
     yearsInBusiness: [] as string[],
     fundingStatus: [] as string[],
     growthStatus: [] as string[],
-    
+
     schedule: "0 19 * * 0,2,4",
     minScore: 7,
     requiredConfidence: "High" as "High" | "Medium" | "Low",
     isActive: true,
   });
+
+  // Apply loaded config from Saved Configurations
+  useEffect(() => {
+    if (configToLoad) {
+      const sc = configToLoad.searchCriteria || {};
+      setConfig({
+        name: configToLoad.name || "",
+        query: sc.query || "",
+        industry: sc.industry || "",
+        revenueRange: sc.revenueRange || "",
+        geographicFocus: sc.geographicFocus || "",
+        strategy: sc.strategy || "buy-side",
+        peFilter: sc.peFilter || "not-pe-backed",
+        employeeCount: sc.employeeCount || [],
+        yearsInBusiness: sc.yearsInBusiness || [],
+        fundingStatus: sc.fundingStatus || [],
+        growthStatus: sc.growthStatus || [],
+        schedule: "0 19 * * 0,2,4",
+        minScore: configToLoad.autoApprovalRules?.minScore || 7,
+        requiredConfidence: configToLoad.autoApprovalRules?.requiredConfidence || "High",
+        isActive: configToLoad.isActive ?? true,
+      });
+      setSavedConfigId(configToLoad.id);
+      onConfigLoaded?.();
+      toast({
+        title: "Configuration loaded",
+        description: `Loaded "${configToLoad.name}" into the form.`,
+      });
+    }
+  }, [configToLoad]);
 
   const saveConfig = useMutation({
     mutationFn: async () => {
@@ -241,6 +489,7 @@ function AgentConfigCard() {
     onSuccess: (data) => {
       setSavedConfigId(data.id);
       queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/agent-configs"] });
       toast({
         title: "Configuration saved",
         description: `Configuration "${config.name}" has been saved successfully.`,
@@ -288,8 +537,9 @@ function AgentConfigCard() {
         const savedConfig = await saveRes.json();
         configId = savedConfig.id;
         setSavedConfigId(configId);
+        queryClient.invalidateQueries({ queryKey: ["/api/agent-configs"] });
       }
-      
+
       // Now run with the saved config ID
       const res = await fetch(`/api/discovery/run/${configId}`, {
         method: "POST",
@@ -470,7 +720,7 @@ function AgentConfigCard() {
                         <Checkbox
                           id={`emp-${option}`}
                           checked={config.employeeCount.includes(option)}
-                          onCheckedChange={() => 
+                          onCheckedChange={() =>
                             setConfig({
                               ...config,
                               employeeCount: toggleArrayValue(config.employeeCount, option)
@@ -497,7 +747,7 @@ function AgentConfigCard() {
                         <Checkbox
                           id={`years-${option}`}
                           checked={config.yearsInBusiness.includes(option)}
-                          onCheckedChange={() => 
+                          onCheckedChange={() =>
                             setConfig({
                               ...config,
                               yearsInBusiness: toggleArrayValue(config.yearsInBusiness, option)
@@ -526,7 +776,7 @@ function AgentConfigCard() {
                         <Checkbox
                           id={`funding-${option}`}
                           checked={config.fundingStatus.includes(option)}
-                          onCheckedChange={() => 
+                          onCheckedChange={() =>
                             setConfig({
                               ...config,
                               fundingStatus: toggleArrayValue(config.fundingStatus, option)
@@ -553,7 +803,7 @@ function AgentConfigCard() {
                         <Checkbox
                           id={`growth-${option}`}
                           checked={config.growthStatus.includes(option)}
-                          onCheckedChange={() => 
+                          onCheckedChange={() =>
                             setConfig({
                               ...config,
                               growthStatus: toggleArrayValue(config.growthStatus, option)
@@ -646,14 +896,14 @@ function AgentConfigCard() {
 
         {/* Action Buttons */}
         <div className="flex gap-2">
-          <Button 
+          <Button
             className="flex-1"
             onClick={() => saveConfig.mutate()}
             disabled={saveConfig.isPending}
           >
             {saveConfig.isPending ? "Saving..." : "Save Configuration"}
           </Button>
-          <Button 
+          <Button
             variant="outline"
             onClick={() => runDiscovery.mutate()}
             disabled={runDiscovery.isPending}

@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import AgentPage from "@/pages/agent";
 import LibraryPage from "@/pages/library-page";
 import ReviewQueuePage from "@/pages/review-queue";
+import ResearchPage from "@/pages/research";
 import WeeklyIntelligencePage from "@/pages/weekly-intelligence";
 import NewsletterDetailPage from "@/pages/newsletter-detail";
 
@@ -14,6 +15,7 @@ function App() {
         <Route path="/agent" component={AgentPage} />
         <Route path="/library" component={LibraryPage} />
         <Route path="/review-queue" component={ReviewQueuePage} />
+        <Route path="/research" component={ResearchPage} />
         <Route path="/weekly-intelligence" component={WeeklyIntelligencePage} />
         <Route path="/newsletter/:id">
           {(params) => <NewsletterDetailPage id={params.id} />}
@@ -47,6 +49,9 @@ function HomePage() {
             </Link>
             <Link href="/library">
               <Button size="lg" variant="outline">Research Library</Button>
+            </Link>
+            <Link href="/research">
+              <Button size="lg" variant="outline">Company Research</Button>
             </Link>
             <Link href="/weekly-intelligence">
               <Button size="lg" variant="outline">Weekly Intelligence</Button>

@@ -1,7 +1,7 @@
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Bot, BookOpen, AlertCircle, BarChart3 } from "lucide-react";
+import { Bot, BookOpen, AlertCircle, BarChart3, Search } from "lucide-react";
 
 export default function HomePage() {
   return (
@@ -16,7 +16,7 @@ export default function HomePage() {
           </p>
         </div>
 
-        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
           <Link href="/agent">
             <Card className="hover:shadow-lg transition-shadow cursor-pointer h-full">
               <CardHeader>
@@ -44,6 +44,23 @@ export default function HomePage() {
               <CardContent>
                 <Button variant="outline" className="w-full">
                   View Queue
+                </Button>
+              </CardContent>
+            </Card>
+          </Link>
+
+          <Link href="/research">
+            <Card className="hover:shadow-lg transition-shadow cursor-pointer h-full border-blue-200 bg-blue-50/50">
+              <CardHeader>
+                <Search className="h-10 w-10 mb-4 text-blue-600" />
+                <CardTitle>Company Research</CardTitle>
+                <CardDescription>
+                  Research specific companies by name or upload a list
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button variant="outline" className="w-full">
+                  Research Now
                 </Button>
               </CardContent>
             </Card>

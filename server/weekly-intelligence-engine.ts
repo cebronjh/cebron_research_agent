@@ -439,7 +439,7 @@ Return ONLY valid JSON with this exact structure:
 
     for (const queryParams of apolloQueries) {
       try {
-        const apolloResponse = await fetch('https://api.apollo.io/v1/people/search', {
+        const apolloResponse = await fetch('https://api.apollo.io/v1/mixed_people/search', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -721,7 +721,7 @@ Return ONLY valid JSON:
       if (apolloApiKey) {
         try {
           const domain = extractDomain(company.url);
-          const apolloResponse = await fetch('https://api.apollo.io/v1/people/search', {
+          const apolloResponse = await fetch('https://api.apollo.io/v1/mixed_people/search', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
