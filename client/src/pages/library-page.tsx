@@ -198,15 +198,20 @@ export default function LibraryPage() {
     if (!savedFolders) return map;
 
     function traverse(flat: any[], id: number): string {
-      const folder = flat.find((f) => f.id === id);
+      const folder = flat.find((f) => {
+        const fId = typeof f.id === 'string' ? parseInt(f.id, 10) : f.id;
+        return fId === id;
+      });
       if (!folder) return "";
-      if (!folder.parentId) return folder.name;
-      const parentPath = traverse(flat, folder.parentId);
+      const parentId = typeof folder.parentId === 'string' ? parseInt(folder.parentId, 10) : folder.parentId;
+      if (!parentId) return folder.name;
+      const parentPath = traverse(flat, parentId);
       return parentPath ? `${parentPath} > ${folder.name}` : folder.name;
     }
 
     savedFolders.forEach((f: any) => {
-      map.set(f.id, traverse(savedFolders, f.id));
+      const fId = typeof f.id === 'string' ? parseInt(f.id, 10) : f.id;
+      map.set(fId, traverse(savedFolders, fId));
     });
 
     return map;
@@ -232,10 +237,13 @@ export default function LibraryPage() {
 
   const allFoldersFlat = useMemo(() => {
     if (!savedFolders) return [];
-    return savedFolders.map((f: any) => ({
-      id: f.id,
-      path: folderPathMap.get(f.id) || f.name,
-    }));
+    return savedFolders.map((f: any) => {
+      const folderId = typeof f.id === 'string' ? parseInt(f.id, 10) : f.id;
+      return {
+        id: folderId,
+        path: folderPathMap.get(folderId) || f.name,
+      };
+    });
   }, [savedFolders, folderPathMap]);
 
   const getNewFolderParentPath = useMemo(() => {
