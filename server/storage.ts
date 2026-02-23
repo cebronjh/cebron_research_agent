@@ -1,5 +1,5 @@
 import { drizzle } from "drizzle-orm/node-postgres";
-import { eq, desc, or, ilike } from "drizzle-orm";
+import { eq, desc, or, ilike, isNull, inArray } from "drizzle-orm";
 import pg from "pg";
 import * as schema from "../drizzle/schema";
 
@@ -257,19 +257,55 @@ class Storage {
     return result;
   }
 
-  async createFolder(name: string) {
+  async createFolder(name: string, parentId: number | null = null) {
     const result = await db
       .insert(schema.folders)
-      .values({ name })
+      .values({ name, parentId })
       .returning();
     return result[0];
   }
 
-  async moveReportToFolder(id: number, folder: string | null) {
+  async getFolderById(id: number) {
+    const result = await db
+      .select()
+      .from(schema.folders)
+      .where(eq(schema.folders.id, id))
+      .limit(1);
+    return result[0];
+  }
+
+  async deleteFolder(id: number) {
+    await db
+      .delete(schema.folders)
+      .where(eq(schema.folders.id, id));
+  }
+
+  async moveReportToFolder(id: number, folderId: number | null) {
     await db
       .update(schema.reports)
-      .set({ folder })
+      .set({ folderId })
       .where(eq(schema.reports.id, id));
+  }
+
+  async setReportArchived(id: number, isArchived: boolean) {
+    await db
+      .update(schema.reports)
+      .set({ isArchived })
+      .where(eq(schema.reports.id, id));
+  }
+
+  async getDescendantFolderIds(rootId: number): Promise<number[]> {
+    // Use raw query for recursive CTE to get all descendants
+    const result = await db.execute(`
+      WITH RECURSIVE descendants AS (
+        SELECT id FROM folders WHERE id = $1
+        UNION ALL
+        SELECT f.id FROM folders f
+        INNER JOIN descendants d ON f.parent_id = d.id
+      )
+      SELECT id FROM descendants
+    `, [rootId]);
+    return (result.rows as any[]).map(row => row.id);
   }
 
   async clearAllData() {

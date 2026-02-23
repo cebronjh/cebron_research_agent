@@ -1,4 +1,4 @@
-import { pgTable, serial, text, timestamp, boolean, integer, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, timestamp, boolean, integer, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 
@@ -25,6 +25,8 @@ export const reports = pgTable("reports", {
   contactsFound: integer("contacts_found"),
   isStarred: boolean("is_starred").default(false),
   folder: text("folder"),
+  folderId: integer("folder_id").references(() => folders.id, { onDelete: "set null" }),
+  isArchived: boolean("is_archived").default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -108,12 +110,17 @@ export const companies = pgTable("companies", {
 // Add researchReports alias for storage compatibility
 export const researchReports = reports;
 
-// Folders table for custom folders
+// Folders table for custom folders (hierarchical)
 export const folders = pgTable("folders", {
   id: serial("id").primaryKey(),
-  name: text("name").notNull().unique(),
+  name: text("name").notNull(),
+  parentId: integer("parent_id").references(() => folders.id, { onDelete: "cascade" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (table) => ({
+  // Unique within the same parent (allows siblings in different parents to share names)
+  nameParentUnique: uniqueIndex("folders_name_parent_id_unique")
+    .on(table.name, table.parentId),
+}));
 
 // Weekly Intelligence tables
 export const weeklyTrends = pgTable("weekly_trends", {

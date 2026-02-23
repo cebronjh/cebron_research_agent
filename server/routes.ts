@@ -297,37 +297,119 @@ export function registerRoutes(app: Express): Server {
   // Create a new folder
   app.post("/api/folders", async (req, res) => {
     try {
-      const { name } = req.body;
+      const { name, parentId } = req.body;
       if (!name || typeof name !== "string" || name.trim().length === 0) {
         return res.status(400).json({ error: "Folder name is required" });
       }
       if (name.trim().toLowerCase() === "archived") {
         return res.status(400).json({ error: "Cannot use reserved folder name 'archived'" });
       }
-      const folder = await storage.createFolder(name.trim());
+
+      // Validate parent exists if parentId is provided
+      if (parentId !== null && typeof parentId === "number") {
+        const parent = await storage.getFolderById(parentId);
+        if (!parent) {
+          return res.status(400).json({ error: "Parent folder not found" });
+        }
+      }
+
+      const folder = await storage.createFolder(name.trim(), parentId || null);
       res.json(folder);
     } catch (error: any) {
       if (error.message?.includes("unique")) {
-        return res.status(400).json({ error: "Folder with this name already exists" });
+        return res.status(400).json({ error: "Folder with this name already exists in this location" });
       }
       console.error("Error creating folder:", error);
       res.status(500).json({ error: "Failed to create folder" });
     }
   });
 
-  // Move report to folder
+  // Delete a folder (CASCADE handles descendants)
+  app.delete("/api/folders/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid folder ID" });
+      }
+      const folder = await storage.getFolderById(id);
+      if (!folder) {
+        return res.status(404).json({ error: "Folder not found" });
+      }
+      await storage.deleteFolder(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting folder:", error);
+      res.status(500).json({ error: "Failed to delete folder" });
+    }
+  });
+
+  // Rename a folder
+  app.patch("/api/folders/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { name } = req.body;
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid folder ID" });
+      }
+      if (!name || typeof name !== "string" || name.trim().length === 0) {
+        return res.status(400).json({ error: "Folder name is required" });
+      }
+
+      const folder = await storage.getFolderById(id);
+      if (!folder) {
+        return res.status(404).json({ error: "Folder not found" });
+      }
+
+      await db.update(schema.folders).set({ name: name.trim() }).where(eq(schema.folders.id, id));
+      const updated = await storage.getFolderById(id);
+      res.json(updated);
+    } catch (error: any) {
+      if (error.message?.includes("unique")) {
+        return res.status(400).json({ error: "Folder with this name already exists in this location" });
+      }
+      console.error("Error renaming folder:", error);
+      res.status(500).json({ error: "Failed to rename folder" });
+    }
+  });
+
+  // Move report to folder (by folderId)
   app.put("/api/reports/:id/folder", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
-      const { folder } = req.body;
-      if (folder !== null && typeof folder !== "string") {
-        return res.status(400).json({ error: "folder must be a string or null" });
+      const { folderId } = req.body;
+      if (folderId !== null && (typeof folderId !== "number" || isNaN(folderId))) {
+        return res.status(400).json({ error: "folderId must be a number or null" });
       }
-      await storage.moveReportToFolder(id, folder || null);
-      res.json({ success: true, folder: folder || null });
+
+      // Validate folder exists if folderId is provided
+      if (folderId !== null && typeof folderId === "number") {
+        const folder = await storage.getFolderById(folderId);
+        if (!folder) {
+          return res.status(404).json({ error: "Folder not found" });
+        }
+      }
+
+      await storage.moveReportToFolder(id, folderId || null);
+      res.json({ success: true, folderId: folderId || null });
     } catch (error) {
       console.error("Error moving to folder:", error);
       res.status(500).json({ error: "Failed to move to folder" });
+    }
+  });
+
+  // Archive/unarchive a report
+  app.put("/api/reports/:id/archive", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { isArchived } = req.body;
+      if (typeof isArchived !== "boolean") {
+        return res.status(400).json({ error: "isArchived boolean is required" });
+      }
+      await storage.setReportArchived(id, isArchived);
+      res.json({ success: true, isArchived });
+    } catch (error) {
+      console.error("Error archiving report:", error);
+      res.status(500).json({ error: "Failed to archive report" });
     }
   });
 

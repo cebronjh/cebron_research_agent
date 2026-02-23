@@ -2,10 +2,42 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { startScheduler } from "./scheduler";
+import { db } from "./storage";
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+
+// Migration function for hierarchical folders (idempotent)
+async function runFolderMigration() {
+  try {
+    log("[Migration] Starting folder migration...");
+
+    // Populate folderId from old folder text column (idempotent)
+    // This links reports to existing root-level folders
+    await db.execute(`
+      UPDATE reports r SET folder_id = f.id
+      FROM folders f
+      WHERE r.folder IS NOT NULL AND r.folder != 'archived'
+        AND r.folder_id IS NULL AND f.name = r.folder AND f.parent_id IS NULL
+    `);
+
+    // Populate isArchived from old folder='archived'
+    await db.execute(`
+      UPDATE reports SET is_archived = true
+      WHERE folder = 'archived' AND is_archived = false
+    `);
+
+    log("[Migration] Folder migration completed successfully");
+  } catch (error: any) {
+    // Migration may fail if columns don't exist yet, which is fine
+    if (error.message?.includes("column") || error.message?.includes("does not exist")) {
+      log("[Migration] Columns not yet in database (first run), skipping migration");
+    } else {
+      console.error("[Migration] Error running folder migration:", error);
+    }
+  }
+}
 
 // Request logging
 app.use((req, res, next) => {
@@ -39,6 +71,9 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Run folder migration before registering routes
+  await runFolderMigration();
+
   const server = registerRoutes(app);
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
