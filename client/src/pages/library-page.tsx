@@ -362,10 +362,10 @@ export default function LibraryPage() {
       </div>
 
       <Dialog open={newFolderDialogOpen} onOpenChange={setNewFolderDialogOpen}>
-        <DialogContent className="max-w-sm">
+        <DialogContent className="max-w-sm bg-white text-black">
           <DialogHeader>
-            <DialogTitle>Create New Folder</DialogTitle>
-            <DialogDescription>
+            <DialogTitle className="text-black">Create New Folder</DialogTitle>
+            <DialogDescription className="text-gray-600">
               Enter a name for your new folder
             </DialogDescription>
           </DialogHeader>
@@ -982,10 +982,10 @@ function ReportCard({
 
       {/* New Folder Dialog from Card */}
       <Dialog open={newFolderFromCardOpen} onOpenChange={setNewFolderFromCardOpen}>
-        <DialogContent className="max-w-sm">
+        <DialogContent className="max-w-sm bg-white text-black">
           <DialogHeader>
-            <DialogTitle>Create New Folder</DialogTitle>
-            <DialogDescription>
+            <DialogTitle className="text-black">Create New Folder</DialogTitle>
+            <DialogDescription className="text-gray-600">
               Create a folder and move this report into it
             </DialogDescription>
           </DialogHeader>
