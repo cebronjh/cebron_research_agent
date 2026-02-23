@@ -703,7 +703,7 @@ function FolderTreeItem({
   return (
     <div>
       <div
-        className={`flex items-center justify-between px-2 py-1 rounded text-sm transition-colors ${
+        className={`flex items-center justify-between px-2 py-1 rounded text-sm transition-colors group ${
           isSelected ? "bg-primary text-primary-foreground" : "hover:bg-gray-100"
         }`}
         style={{ paddingLeft: `${8 + depth * 16}px` }}
@@ -745,7 +745,7 @@ function FolderTreeItem({
             e.stopPropagation();
             onCreateSubfolder(node.id);
           }}
-          className="p-1 hover:bg-gray-200 rounded ml-1 opacity-0 hover:opacity-100 transition-opacity"
+          className="p-1 hover:bg-gray-200 rounded ml-1 opacity-0 group-hover:opacity-100 transition-opacity"
           title="Add subfolder"
         >
           <FolderPlus className="h-3 w-3" />
@@ -755,7 +755,7 @@ function FolderTreeItem({
             e.stopPropagation();
             onDeleteFolder(node.id);
           }}
-          className="p-1 hover:bg-red-100 hover:text-red-600 rounded ml-1 opacity-0 hover:opacity-100 transition-opacity"
+          className="p-1 hover:bg-red-100 hover:text-red-600 rounded ml-1 opacity-0 group-hover:opacity-100 transition-opacity"
           title="Delete folder"
         >
           <Trash2 className="h-3 w-3" />
@@ -1122,6 +1122,11 @@ function ReportCard({
     folderMutation.mutate(folderId);
   };
 
+  const handleArchive = (isArchived: boolean) => {
+    setMenuOpen(false);
+    archiveMutation.mutate(isArchived);
+  };
+
   return (
     <Card className="hover:shadow-md transition-shadow">
       <CardHeader>
@@ -1176,10 +1181,8 @@ function ReportCard({
                     {report.isArchived ? (
                       <button
                         className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-100 text-left"
-                        onClick={() => {
-                          setMenuOpen(false);
-                          archiveMutation.mutate(false);
-                        }}
+                        onClick={() => handleArchive(false)}
+                        disabled={archiveMutation.isPending}
                       >
                         <ArchiveRestore className="h-4 w-4" />
                         Unarchive
@@ -1187,10 +1190,8 @@ function ReportCard({
                     ) : (
                       <button
                         className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-100 text-left"
-                        onClick={() => {
-                          setMenuOpen(false);
-                          archiveMutation.mutate(true);
-                        }}
+                        onClick={() => handleArchive(true)}
+                        disabled={archiveMutation.isPending}
                       >
                         <Archive className="h-4 w-4" />
                         Archive
