@@ -108,6 +108,13 @@ export const companies = pgTable("companies", {
 // Add researchReports alias for storage compatibility
 export const researchReports = reports;
 
+// Folders table for custom folders
+export const folders = pgTable("folders", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 // Weekly Intelligence tables
 export const weeklyTrends = pgTable("weekly_trends", {
   id: serial("id").primaryKey(),

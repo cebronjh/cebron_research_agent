@@ -67,6 +67,8 @@ export default function LibraryPage() {
   const [filterIndustry, setFilterIndustry] = useState<string>("all");
   const [sortBy, setSortBy] = useState<string>("date");
   const [selectedReportId, setSelectedReportId] = useState<number | null>(null);
+  const [newFolderDialogOpen, setNewFolderDialogOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -74,12 +76,40 @@ export default function LibraryPage() {
     queryKey: ["/api/reports"],
   });
 
+  const { data: savedFolders = [] } = useQuery({
+    queryKey: ["/api/folders"],
+  });
+
   const { data: fullReport, isLoading: isLoadingReport } = useQuery({
     queryKey: [`/api/reports/${selectedReportId}`],
     enabled: selectedReportId !== null,
   });
 
-  // Compute folders dynamically from report data
+  const createFolderMutation = useMutation({
+    mutationFn: async (name: string) => {
+      const res = await fetch("/api/folders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to create folder");
+      }
+      return res.json();
+    },
+    onSuccess: (data) => {
+      toast({ title: "Folder Created", description: `"${data.name}" folder has been created` });
+      queryClient.invalidateQueries({ queryKey: ["/api/reports"] });
+      setNewFolderDialogOpen(false);
+      setNewFolderName("");
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Compute folders dynamically from report data and saved folders
   const folders = useMemo<FolderItem[]>(() => {
     if (!reports) return [
       { id: "all", name: "All Reports", type: "all", count: 0 },
@@ -91,12 +121,19 @@ export default function LibraryPage() {
     const starred = reports.filter((r: any) => r.isStarred);
     const archived = reports.filter((r: any) => r.folder === "archived");
 
-    // Collect custom folder names (excluding "archived")
+    // Collect custom folder names from both reports and saved folders
     const customFolderNames = new Set<string>();
+
+    // From reports
     reports.forEach((r: any) => {
       if (r.folder && r.folder !== "archived") {
         customFolderNames.add(r.folder);
       }
+    });
+
+    // From saved folders table
+    savedFolders.forEach((f: any) => {
+      customFolderNames.add(f.name);
     });
 
     const builtIn: FolderItem[] = [
@@ -115,7 +152,7 @@ export default function LibraryPage() {
       }));
 
     return [...builtIn, ...custom];
-  }, [reports]);
+  }, [reports, savedFolders]);
 
   // Get unique custom folder names for move-to-folder options
   const customFolderNames = useMemo(() => {
@@ -219,11 +256,8 @@ export default function LibraryPage() {
                 <button
                   className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-muted-foreground hover:bg-gray-100 transition-colors"
                   onClick={() => {
-                    const name = prompt("New folder name:");
-                    if (name && name.trim() && name.trim().toLowerCase() !== "archived") {
-                      // Just create the folder by selecting it — it will appear when a report is moved into it
-                      toast({ title: "Folder ready", description: `Move reports to "${name.trim()}" using the menu on each card.` });
-                    }
+                    setNewFolderDialogOpen(true);
+                    setNewFolderName("");
                   }}
                 >
                   <FolderPlus className="h-4 w-4" />
@@ -326,6 +360,50 @@ export default function LibraryPage() {
           </div>
         </div>
       </div>
+
+      <Dialog open={newFolderDialogOpen} onOpenChange={setNewFolderDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Create New Folder</DialogTitle>
+            <DialogDescription>
+              Enter a name for your new folder
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Input
+              placeholder="Folder name (e.g., 'Q4 Targets', 'Hot Prospects')"
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && newFolderName.trim()) {
+                  createFolderMutation.mutate(newFolderName.trim());
+                }
+              }}
+              autoFocus
+            />
+            <div className="flex gap-2 justify-end">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setNewFolderDialogOpen(false);
+                  setNewFolderName("");
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => createFolderMutation.mutate(newFolderName.trim())}
+                disabled={!newFolderName.trim() || createFolderMutation.isPending}
+              >
+                {createFolderMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : null}
+                Create Folder
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={selectedReportId !== null} onOpenChange={(open) => !open && setSelectedReportId(null)}>
         <DialogContent className="max-w-4xl max-h-[90vh] bg-white text-black">
@@ -638,6 +716,8 @@ function ReportCard({
   const [menuOpen, setMenuOpen] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameValue, setNameValue] = useState(report.companyName);
+  const [newFolderFromCardOpen, setNewFolderFromCardOpen] = useState(false);
+  const [newFolderFromCardName, setNewFolderFromCardName] = useState("");
   const menuRef = useRef<HTMLDivElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
 
@@ -715,6 +795,41 @@ function ReportCard({
       toast({
         title: folder === "archived" ? "Archived" : folder ? `Moved to ${folder}` : "Moved to All Reports",
       });
+    },
+  });
+
+  const createAndMoveFolderMutation = useMutation({
+    mutationFn: async (folderName: string) => {
+      // First create the folder
+      const createRes = await fetch("/api/folders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: folderName }),
+      });
+
+      // If folder already exists, that's fine - it will throw a 400
+      // but we can still move the report to it
+
+      // Then move the report to the folder
+      const moveRes = await fetch(`/api/reports/${report.id}/folder`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folder: folderName }),
+      });
+      if (!moveRes.ok) throw new Error("Failed to move report");
+      return moveRes.json();
+    },
+    onSuccess: (_data, folderName) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/reports"] });
+      toast({
+        title: "Folder Created & Report Moved",
+        description: `Report moved to "${folderName}"`,
+      });
+      setNewFolderFromCardOpen(false);
+      setNewFolderFromCardName("");
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -811,10 +926,8 @@ function ReportCard({
                       className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-100 text-left"
                       onClick={() => {
                         setMenuOpen(false);
-                        const name = prompt("New folder name:");
-                        if (name && name.trim() && name.trim().toLowerCase() !== "archived") {
-                          folderMutation.mutate(name.trim());
-                        }
+                        setNewFolderFromCardOpen(true);
+                        setNewFolderFromCardName("");
                       }}
                     >
                       <FolderPlus className="h-4 w-4" />
@@ -866,6 +979,51 @@ function ReportCard({
           </Button>
         </div>
       </CardContent>
+
+      {/* New Folder Dialog from Card */}
+      <Dialog open={newFolderFromCardOpen} onOpenChange={setNewFolderFromCardOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Create New Folder</DialogTitle>
+            <DialogDescription>
+              Create a folder and move this report into it
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Input
+              placeholder="Folder name"
+              value={newFolderFromCardName}
+              onChange={(e) => setNewFolderFromCardName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && newFolderFromCardName.trim()) {
+                  createAndMoveFolderMutation.mutate(newFolderFromCardName.trim());
+                }
+              }}
+              autoFocus
+            />
+            <div className="flex gap-2 justify-end">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setNewFolderFromCardOpen(false);
+                  setNewFolderFromCardName("");
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => createAndMoveFolderMutation.mutate(newFolderFromCardName.trim())}
+                disabled={!newFolderFromCardName.trim() || createAndMoveFolderMutation.isPending}
+              >
+                {createAndMoveFolderMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : null}
+                Create & Move
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

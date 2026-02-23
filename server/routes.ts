@@ -283,6 +283,38 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
+  // Get all folders
+  app.get("/api/folders", async (req, res) => {
+    try {
+      const folders = await storage.getAllFolders();
+      res.json(folders);
+    } catch (error) {
+      console.error("Error fetching folders:", error);
+      res.status(500).json({ error: "Failed to fetch folders" });
+    }
+  });
+
+  // Create a new folder
+  app.post("/api/folders", async (req, res) => {
+    try {
+      const { name } = req.body;
+      if (!name || typeof name !== "string" || name.trim().length === 0) {
+        return res.status(400).json({ error: "Folder name is required" });
+      }
+      if (name.trim().toLowerCase() === "archived") {
+        return res.status(400).json({ error: "Cannot use reserved folder name 'archived'" });
+      }
+      const folder = await storage.createFolder(name.trim());
+      res.json(folder);
+    } catch (error: any) {
+      if (error.message?.includes("unique")) {
+        return res.status(400).json({ error: "Folder with this name already exists" });
+      }
+      console.error("Error creating folder:", error);
+      res.status(500).json({ error: "Failed to create folder" });
+    }
+  });
+
   // Move report to folder
   app.put("/api/reports/:id/folder", async (req, res) => {
     try {

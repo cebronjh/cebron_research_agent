@@ -249,6 +249,22 @@ class Storage {
       .where(eq(schema.reports.id, id));
   }
 
+  async getAllFolders() {
+    const result = await db
+      .select()
+      .from(schema.folders)
+      .orderBy(schema.folders.name);
+    return result;
+  }
+
+  async createFolder(name: string) {
+    const result = await db
+      .insert(schema.folders)
+      .values({ name })
+      .returning();
+    return result[0];
+  }
+
   async moveReportToFolder(id: number, folder: string | null) {
     await db
       .update(schema.reports)
