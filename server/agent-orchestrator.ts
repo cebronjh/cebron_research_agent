@@ -273,7 +273,7 @@ Return ONLY valid JSON:
 
       try {
         const response = await withRetry(() => anthropic.messages.create({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-haiku-4-5-20251001",
           max_tokens: 2000,
           messages: [{ role: "user", content: prompt }],
         }), `Claude company name extraction batch ${Math.floor(i / BATCH_SIZE) + 1}`);
@@ -432,7 +432,7 @@ Confidence levels:
 - Low: Marginal fit or significant gaps`;
 
     const response = await withRetry(() => anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 2000,
       messages: [{ role: "user", content: prompt }],
     }), `Claude scoring ${company.title}`);
@@ -850,7 +850,7 @@ Search thoroughly - check the company website's "About Us" / "Team" / "Leadershi
 Use web search to find current information.`;
 
     const response = await withRetry(() => anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 16000,
       messages: [{ role: "user", content: prompt }],
       tools: [
@@ -984,7 +984,7 @@ Do NOT use generic M&A jargon. Make it feel personal and researched.
 Return ONLY the email body text, no subject line or headers.`;
 
     const response = await withRetry(() => anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 2000,
       messages: [{ role: "user", content: prompt }],
     }), `Outreach generation for ${report.companyName}`);

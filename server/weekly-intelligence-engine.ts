@@ -354,7 +354,7 @@ Return ONLY valid JSON with this exact structure:
 }`;
 
     const response = await withRetry(() => anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 4000,
       messages: [{ role: "user", content: prompt }],
     }), 'Claude hot sector analysis');
@@ -592,7 +592,7 @@ Return ONLY valid JSON:
 
       try {
         const response = await withRetry(() => anthropic.messages.create({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-haiku-4-5-20251001",
           max_tokens: 2000,
           messages: [{ role: "user", content: prompt }],
         }), `Claude PE classification batch ${Math.floor(i / BATCH_SIZE) + 1}`);
@@ -885,7 +885,7 @@ Return ONLY valid JSON:
 
     try {
       const response = await withRetry(() => anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
+        model: "claude-haiku-4-5-20251001",
         max_tokens: 2000,
         messages: [{ role: "user", content: prompt }],
       }), 'Claude company name extraction');
@@ -1075,7 +1075,7 @@ IMPORTANT:
 - If the email you found belongs to someone other than the CEO/founder, put their name in emailOwnerName.`;
 
     const claudeResponse = await withRetry(() => anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 500,
       messages: [{ role: "user", content: prompt }],
     }), `Claude contact extraction for ${companyName}`);
@@ -1184,7 +1184,7 @@ The content field must be clean HTML wrapped in a styled container div. Example 
 </div>`;
 
     const response = await withRetry(() => anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 4000,
       messages: [{ role: "user", content: prompt }],
     }), `Claude newsletter for ${sector.name}`);
