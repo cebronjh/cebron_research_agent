@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { enrichResearchWithApollo } from "./apollo-enrichment";
 import { addPatentIntelligence, evaluatePatentUpside } from "./uspto-patents";
 import { addFDAIntelligence } from "./fda-data";
+import { cachedExaSearch } from "./exa-cache";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -151,21 +152,16 @@ export class AgentOrchestrator {
   }
 
   private async discoverCompanies(criteria: SearchCriteria): Promise<any[]> {
-    console.log("[Agent] Discovering companies with Exa (direct API)...");
+    console.log("[Agent] Discovering companies with Exa (with caching)...");
 
     const query = this.buildExaQuery(criteria);
-    
-    console.log("[Agent] Calling Exa API directly with query:", query);
 
-    // Direct API call to Exa with retry
-    const response = await withRetry(() => fetch('https://api.exa.ai/search', {
-      method: 'POST',
-      headers: {
-        'x-api-key': process.env.EXA_API_KEY || '',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        query: query,
+    console.log("[Agent] Searching with query:", query);
+
+    // Use cached Exa search to reduce API calls
+    const data = await withRetry(
+      () => cachedExaSearch({
+        query,
         numResults: criteria.maxResults || 35,
         type: 'neural',
         useAutoprompt: true,
@@ -174,16 +170,12 @@ export class AgentOrchestrator {
             maxCharacters: 1000
           }
         }
-      })
-    }), 'Exa API search');
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[Agent] Exa API error response:`, errorText);
-      throw new Error(`Exa API error (${response.status}): ${errorText}`);
-    }
-
-    const data = await response.json();
+      }, {
+        cacheType: 'company_discovery',
+        ttlDays: 30
+      }),
+      'Cached Exa search'
+    );
     console.log(`[Agent] Exa API returned ${data.results?.length || 0} results`);
 
     if (!data.results || data.results.length === 0) {

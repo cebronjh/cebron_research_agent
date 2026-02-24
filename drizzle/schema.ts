@@ -171,3 +171,16 @@ export const targetContacts = pgTable("target_contacts", {
   newsletterSent: boolean("newsletter_sent").default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
+// Exa API cache table to reduce API calls and costs
+export const exaCache = pgTable("exa_cache", {
+  id: serial("id").primaryKey(),
+  queryHash: text("query_hash").notNull().unique(), // SHA256 hash of the query
+  query: text("query").notNull(),
+  results: jsonb("results").notNull(), // Cached Exa API response
+  exaParameters: jsonb("exa_parameters"), // numResults, type, etc.
+  cacheType: text("cache_type").notNull(), // 'market_intelligence', 'company_discovery', 'contact_enrichment'
+  hitCount: integer("hit_count").default(1), // Number of times this cache was used
+  expiresAt: timestamp("expires_at").notNull(), // When cache expires
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});

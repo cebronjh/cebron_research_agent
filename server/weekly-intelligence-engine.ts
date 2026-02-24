@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { db } from "../drizzle/schema";
 import * as schema from "../drizzle/schema";
 import { eq } from "drizzle-orm";
+import { cachedExaSearch } from "./exa-cache";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -271,13 +272,8 @@ export class WeeklyIntelligenceEngine {
 
     for (const query of queries) {
       try {
-        const response = await withRetry(() => fetch('https://api.exa.ai/search', {
-          method: 'POST',
-          headers: {
-            'x-api-key': process.env.EXA_API_KEY || '',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
+        const data = await withRetry(
+          () => cachedExaSearch({
             query,
             numResults: 10,
             type: 'neural',
@@ -285,16 +281,13 @@ export class WeeklyIntelligenceEngine {
             contents: {
               text: { maxCharacters: 1000 },
             },
+          }, {
+            cacheType: 'market_intelligence',
+            ttlDays: 7  // Market news expires faster
           }),
-        }), `Exa search: ${query.substring(0, 40)}...`);
+          `Exa search: ${query.substring(0, 40)}...`
+        );
 
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error(`[WI] Exa error for query "${query}":`, errorText);
-          continue;
-        }
-
-        const data = await response.json();
         if (data.results) {
           allResults.push(...data.results);
           console.log(`[WI]   Query "${query.substring(0, 40)}..." → ${data.results.length} results`);
@@ -799,30 +792,22 @@ Return ONLY valid JSON:
   private async discoverCompaniesForSector(sector: HotSector & { dbId: number }): Promise<DiscoveredCompany[]> {
     const query = `${sector.searchQuery} $10M-$100M revenue founder-led family-owned independent NOT private equity NOT PE-backed`;
 
-    const response = await withRetry(() => fetch('https://api.exa.ai/search', {
-      method: 'POST',
-      headers: {
-        'x-api-key': process.env.EXA_API_KEY || '',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query,
-        numResults: 15,
-        type: 'neural',
-        useAutoprompt: true,
-        contents: {
-          text: { maxCharacters: 800 },
-        },
-      }),
-    }), `Exa company discovery for ${sector.name}`);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[WI] Exa error discovering companies for ${sector.name}:`, errorText);
-      return [];
-    }
-
-    const data = await response.json();
+    try {
+      const data = await withRetry(
+        () => cachedExaSearch({
+          query,
+          numResults: 15,
+          type: 'neural',
+          useAutoprompt: true,
+          contents: {
+            text: { maxCharacters: 800 },
+          },
+        }, {
+          cacheType: 'company_discovery',
+          ttlDays: 30
+        }),
+        `Exa company discovery for ${sector.name}`
+      );
     if (!data.results || data.results.length === 0) return [];
 
     // Deduplicate by URL
@@ -930,13 +915,8 @@ Return ONLY valid JSON:
     // Strategy 1: Search the company's own website for contact/about/team pages
     if (domain) {
       try {
-        const siteResponse = await withRetry(() => fetch('https://api.exa.ai/search', {
-          method: 'POST',
-          headers: {
-            'x-api-key': process.env.EXA_API_KEY || '',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
+        const siteData = await withRetry(
+          () => cachedExaSearch({
             query: `${companyName} contact team about leadership`,
             numResults: 3,
             type: 'neural',
@@ -945,11 +925,14 @@ Return ONLY valid JSON:
             contents: {
               text: { maxCharacters: 2000 },
             },
+          }, {
+            cacheType: 'contact_enrichment',
+            ttlDays: 60
           }),
-        }), `Exa site scrape for ${companyName}`);
+          `Exa site scrape for ${companyName}`
+        );
 
-        if (siteResponse.ok) {
-          const siteData = await siteResponse.json();
+        if (siteData) {
           if (siteData.results?.length > 0) {
             const siteText = siteData.results
               .map((r: any) => `Source: ${r.url}\n${r.text || ''}`)
@@ -977,13 +960,8 @@ Return ONLY valid JSON:
     // Strategy 2: Search the web for published emails at this domain
     if (!foundEmail && domain) {
       try {
-        const emailResponse = await withRetry(() => fetch('https://api.exa.ai/search', {
-          method: 'POST',
-          headers: {
-            'x-api-key': process.env.EXA_API_KEY || '',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
+        const emailData = await withRetry(
+          () => cachedExaSearch({
             query: `"@${domain}" CEO OR founder OR owner OR president`,
             numResults: 3,
             type: 'neural',
@@ -991,11 +969,14 @@ Return ONLY valid JSON:
             contents: {
               text: { maxCharacters: 1500 },
             },
+          }, {
+            cacheType: 'contact_enrichment',
+            ttlDays: 60
           }),
-        }), `Exa email search for @${domain}`);
+          `Exa email search for @${domain}`
+        );
 
-        if (emailResponse.ok) {
-          const emailData = await emailResponse.json();
+        if (emailData) {
           if (emailData.results?.length > 0) {
             const emailText = emailData.results
               .map((r: any) => `Source: ${r.url}\n${r.text || ''}`)
@@ -1022,13 +1003,8 @@ Return ONLY valid JSON:
     // Strategy 3: Search for leadership info (always run for name discovery)
     try {
       const query = `"${companyName}" CEO OR founder OR owner OR president leadership team`;
-      const response = await withRetry(() => fetch('https://api.exa.ai/search', {
-        method: 'POST',
-        headers: {
-          'x-api-key': process.env.EXA_API_KEY || '',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      const data = await withRetry(
+        () => cachedExaSearch({
           query,
           numResults: 3,
           type: 'neural',
@@ -1036,11 +1012,14 @@ Return ONLY valid JSON:
           contents: {
             text: { maxCharacters: 1500 },
           },
+        }, {
+          cacheType: 'contact_enrichment',
+          ttlDays: 60
         }),
-      }), `Exa leadership search for ${companyName}`);
+        `Exa leadership search for ${companyName}`
+      );
 
-      if (response.ok) {
-        const data = await response.json();
+      if (data) {
         if (data.results?.length > 0) {
           const leaderText = data.results
             .map((r: any) => `Source: ${r.url}\n${r.text || ''}`)
