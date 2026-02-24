@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
+import DOMPurify from "dompurify";
 import {
   Card,
   CardContent,
@@ -232,7 +233,7 @@ export default function NewsletterDetailPage({ id }: { id: string }) {
           <CardContent>
             <div
               className="bg-gray-50 p-6 rounded-lg border"
-              dangerouslySetInnerHTML={{ __html: newsletter.content }}
+              dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(newsletter.content) }}
             />
           </CardContent>
         </Card>

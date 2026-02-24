@@ -3,10 +3,40 @@ import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { startScheduler } from "./scheduler";
 import { db } from "./storage";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import session from "express-session";
+import { registerAuthRoutes } from "./auth";
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+
+// Security headers
+app.use(helmet());
+
+// Session middleware (must come before auth routes)
+app.use(session({
+  secret: process.env.SESSION_SECRET || "dev-secret-change-me",
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === "production",
+    httpOnly: true,
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  },
+}));
+
+// Rate limiting on API (100 req/min per IP)
+const apiLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 100,
+  message: "Too many requests from this IP, please try again later",
+});
+app.use("/api/", apiLimiter);
+
+// Register auth routes before other routes
+registerAuthRoutes(app);
 
 // Migration function for hierarchical folders (idempotent)
 async function runFolderMigration() {
