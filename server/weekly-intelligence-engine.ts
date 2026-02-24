@@ -808,38 +808,43 @@ Return ONLY valid JSON:
         }),
         `Exa company discovery for ${sector.name}`
       );
-    if (!data.results || data.results.length === 0) return [];
 
-    // Deduplicate by URL
-    const unique = new Map<string, DiscoveredCompany>();
-    for (const r of data.results) {
-      if (r.url && !unique.has(r.url)) {
-        unique.set(r.url, {
-          title: r.title || "Unknown Company",
-          url: r.url,
-          text: r.text || "",
-        });
+      if (!data.results || data.results.length === 0) return [];
+
+      // Deduplicate by URL
+      const unique = new Map<string, DiscoveredCompany>();
+      for (const r of data.results) {
+        if (r.url && !unique.has(r.url)) {
+          unique.set(r.url, {
+            title: r.title || "Unknown Company",
+            url: r.url,
+            text: r.text || "",
+          });
+        }
       }
-    }
 
-    const rawCompanies = Array.from(unique.values());
+      const rawCompanies = Array.from(unique.values());
 
-    // Use Claude to extract real company names from page titles/URLs/text
-    const namedCompanies = await this.extractCompanyNames(rawCompanies);
+      // Use Claude to extract real company names from page titles/URLs/text
+      const namedCompanies = await this.extractCompanyNames(rawCompanies);
 
-    // Deduplicate by normalized company name
-    const seen = new Map<string, DiscoveredCompany>();
-    for (const company of namedCompanies) {
-      const key = company.title.toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (!seen.has(key)) {
-        seen.set(key, company);
+      // Deduplicate by normalized company name
+      const seen = new Map<string, DiscoveredCompany>();
+      for (const company of namedCompanies) {
+        const key = company.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (!seen.has(key)) {
+          seen.set(key, company);
+        }
       }
+      const deduped = Array.from(seen.values());
+      if (deduped.length < namedCompanies.length) {
+        console.log(`[WI]   Deduped ${namedCompanies.length} → ${deduped.length} companies by name`);
+      }
+      return deduped;
+    } catch (error: any) {
+      console.error(`[WI] Company discovery failed for ${sector.name}:`, error?.message);
+      return [];
     }
-    const deduped = Array.from(seen.values());
-    if (deduped.length < namedCompanies.length) {
-      console.log(`[WI]   Deduped ${namedCompanies.length} → ${deduped.length} companies by name`);
-    }
-    return deduped;
   }
 
   private async extractCompanyNames(companies: DiscoveredCompany[]): Promise<DiscoveredCompany[]> {
