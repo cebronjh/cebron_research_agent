@@ -19,8 +19,12 @@
     "@tanstack/react-query": "^5.62.7",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
+    "dompurify": "^3.0.6",
     "drizzle-orm": "^0.36.4",
     "express": "^4.21.1",
+    "express-rate-limit": "^7.1.5",
+    "express-session": "^1.17.3",
+    "helmet": "^7.1.0",
     "lucide-react": "^0.453.0",
     "node-cron": "^3.0.3",
     "pg": "^8.13.1",
@@ -33,7 +37,9 @@
     "wouter": "^3.5.1"
   },
   "devDependencies": {
+    "@types/dompurify": "^3.0.5",
     "@types/express": "^5.0.0",
+    "@types/express-session": "^1.17.21",
     "@types/node": "^22.9.0",
     "@types/node-cron": "^3.0.11",
     "@types/pg": "^8.11.10",
