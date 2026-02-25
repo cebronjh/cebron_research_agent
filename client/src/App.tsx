@@ -1,82 +1,37 @@
-import { Switch, Route, Link, useLocation } from "wouter";
+import { Switch, Route, Link } from "wouter";
 import { Button } from "@/components/ui/button";
-import { useQuery } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
 import AgentPage from "@/pages/agent";
 import LibraryPage from "@/pages/library-page";
 import ReviewQueuePage from "@/pages/review-queue";
 import ResearchPage from "@/pages/research";
 import WeeklyIntelligencePage from "@/pages/weekly-intelligence";
 import NewsletterDetailPage from "@/pages/newsletter-detail";
-import LoginPage from "@/pages/login-page";
-
-interface ProtectedRouteProps {
-  children: React.ReactNode;
-}
-
-function ProtectedRoute({ children }: ProtectedRouteProps) {
-  const [, navigate] = useLocation();
-  const { data, isLoading } = useQuery({
-    queryKey: ["/api/auth/status"],
-    refetchInterval: 5 * 60 * 1000, // Refetch every 5 minutes
-  });
-
-  if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
-  if (!data?.authenticated) {
-    navigate("/login");
-    return null;
-  }
-
-  return <>{children}</>;
-}
 
 function App() {
   return (
     <div className="min-h-screen bg-background">
       <Switch>
-        <Route path="/login" component={LoginPage} />
         <Route path="/">
-          <ProtectedRoute>
-            <HomePage />
-          </ProtectedRoute>
+          <HomePage />
         </Route>
         <Route path="/agent">
-          <ProtectedRoute>
-            <AgentPage />
-          </ProtectedRoute>
+          <AgentPage />
         </Route>
         <Route path="/library">
-          <ProtectedRoute>
-            <LibraryPage />
-          </ProtectedRoute>
+          <LibraryPage />
         </Route>
         <Route path="/review-queue">
-          <ProtectedRoute>
-            <ReviewQueuePage />
-          </ProtectedRoute>
+          <ReviewQueuePage />
         </Route>
         <Route path="/research">
-          <ProtectedRoute>
-            <ResearchPage />
-          </ProtectedRoute>
+          <ResearchPage />
         </Route>
         <Route path="/weekly-intelligence">
-          <ProtectedRoute>
-            <WeeklyIntelligencePage />
-          </ProtectedRoute>
+          <WeeklyIntelligencePage />
         </Route>
         <Route path="/newsletter/:id">
           {(params) => (
-            <ProtectedRoute>
-              <NewsletterDetailPage id={params.id} />
-            </ProtectedRoute>
+            <NewsletterDetailPage id={params.id} />
           )}
         </Route>
         <Route component={NotFound} />
@@ -86,25 +41,11 @@ function App() {
 }
 
 function HomePage() {
-  const [, navigate] = useLocation();
-
-  const handleLogout = async () => {
-    try {
-      await fetch("/api/auth/logout", { method: "POST" });
-      navigate("/login");
-    } catch (error) {
-      console.error("Logout error:", error);
-    }
-  };
-
   return (
     <div className="min-h-screen flex flex-col">
       <header className="border-b">
         <div className="container mx-auto px-6 py-4 flex justify-between items-center">
           <h1 className="text-2xl font-bold">Cebron Research</h1>
-          <Button variant="outline" size="sm" onClick={handleLogout}>
-            Sign Out
-          </Button>
         </div>
       </header>
       <main className="flex-1 container mx-auto px-6 py-16">
