@@ -9,6 +9,10 @@ import session from "express-session";
 import { registerAuthRoutes } from "./auth";
 
 const app = express();
+
+// Trust proxy - required for Railway and other proxied environments
+app.set("trust proxy", 1);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
@@ -23,6 +27,7 @@ app.use(session({
   cookie: {
     secure: process.env.NODE_ENV === "production",
     httpOnly: true,
+    sameSite: "lax",
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   },
 }));
