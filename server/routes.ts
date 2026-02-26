@@ -5,11 +5,10 @@ import { agentOrchestrator } from "./agent-orchestrator";
 import { weeklyIntelligenceEngine } from "./weekly-intelligence-engine";
 import { eq, desc } from "drizzle-orm";
 import * as schema from "../drizzle/schema";
-import { requireAuth } from "./auth";
 
 export function registerRoutes(app: Express): Server {
   // Get all agent configurations
-  app.get("/api/agent-configs", requireAuth, async (req, res) => {
+  app.get("/api/agent-configs", async (req, res) => {
     try {
       const configs = await storage.getAllAgentConfigs();
       res.json(configs);
@@ -20,7 +19,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Create agent configuration
-  app.post("/api/agent-configs", requireAuth, async (req, res) => {
+  app.post("/api/agent-configs", async (req, res) => {
     try {
       const { name, searchCriteria, autoApprovalRules } = req.body;
       if (!name || typeof name !== "string" || name.trim().length === 0) {
@@ -44,7 +43,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Update agent configuration
-  app.put("/api/agent-configs/:id", requireAuth, async (req, res) => {
+  app.put("/api/agent-configs/:id", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       const config = await storage.updateAgentConfig(id, req.body);
@@ -56,7 +55,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Delete agent configuration
-  app.delete("/api/agent-configs/:id", requireAuth, async (req, res) => {
+  app.delete("/api/agent-configs/:id", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       await storage.deleteAgentConfig(id);
@@ -68,7 +67,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Run discovery workflow manually
-  app.post("/api/discovery/run/:configId", requireAuth, async (req, res) => {
+  app.post("/api/discovery/run/:configId", async (req, res) => {
     try {
       const configId = parseInt(req.params.configId);
       if (isNaN(configId)) {
@@ -93,7 +92,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Get all workflows
-  app.get("/api/workflows", requireAuth, async (req, res) => {
+  app.get("/api/workflows", async (req, res) => {
     try {
       const workflows = await storage.getAllWorkflows();
       res.json(workflows);
@@ -104,7 +103,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Get discovery queue items for a specific workflow
-  app.get("/api/workflows/:id/companies", requireAuth, async (req, res) => {
+  app.get("/api/workflows/:id/companies", async (req, res) => {
     try {
       const workflowId = parseInt(req.params.id);
       if (isNaN(workflowId)) {
@@ -119,7 +118,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Get companies in discovery queue (pending approval)
-  app.get("/api/discovery-queue/pending", requireAuth, async (req, res) => {
+  app.get("/api/discovery-queue/pending", async (req, res) => {
     try {
       const pending = await storage.getPendingApprovals();
       res.json(pending);
@@ -130,7 +129,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Approve company manually (triggers research)
-  app.post("/api/discovery-queue/:id/approve", requireAuth, async (req, res) => {
+  app.post("/api/discovery-queue/:id/approve", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       console.log(`[API] Manual approval for company ${id}`);
@@ -159,7 +158,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Reject company
-  app.post("/api/discovery-queue/:id/reject", requireAuth, async (req, res) => {
+  app.post("/api/discovery-queue/:id/reject", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       await storage.updateDiscoveryQueueItem(id, {
@@ -173,7 +172,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Get all completed reports (for library)
-  app.get("/api/reports", requireAuth, async (req, res) => {
+  app.get("/api/reports", async (req, res) => {
     try {
       const reports = await storage.getReports({ status: "completed" });
       
@@ -236,7 +235,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Get single report (full content)
-  app.get("/api/reports/:id", requireAuth, async (req, res) => {
+  app.get("/api/reports/:id", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       const report = await storage.getReportById(id);
@@ -253,7 +252,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Update report company name
-  app.put("/api/reports/:id/name", requireAuth, async (req, res) => {
+  app.put("/api/reports/:id/name", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       const { companyName } = req.body;
@@ -269,7 +268,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Toggle report starred status
-  app.put("/api/reports/:id/star", requireAuth, async (req, res) => {
+  app.put("/api/reports/:id/star", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       const { isStarred } = req.body;
@@ -285,7 +284,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Get all folders
-  app.get("/api/folders", requireAuth, async (req, res) => {
+  app.get("/api/folders", async (req, res) => {
     try {
       const folders = await storage.getAllFolders();
       res.json(folders);
@@ -296,7 +295,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Create a new folder
-  app.post("/api/folders", requireAuth, async (req, res) => {
+  app.post("/api/folders", async (req, res) => {
     try {
       const { name, parentId } = req.body;
       if (!name || typeof name !== "string" || name.trim().length === 0) {
@@ -326,7 +325,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Delete a folder (CASCADE handles descendants)
-  app.delete("/api/folders/:id", requireAuth, async (req, res) => {
+  app.delete("/api/folders/:id", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       if (isNaN(id)) {
@@ -345,7 +344,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Rename a folder
-  app.patch("/api/folders/:id", requireAuth, async (req, res) => {
+  app.patch("/api/folders/:id", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       const { name } = req.body;
@@ -374,7 +373,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Move report to folder (by folderId)
-  app.put("/api/reports/:id/folder", requireAuth, async (req, res) => {
+  app.put("/api/reports/:id/folder", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       const { folderId } = req.body;
@@ -399,7 +398,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Archive/unarchive a report
-  app.put("/api/reports/:id/archive", requireAuth, async (req, res) => {
+  app.put("/api/reports/:id/archive", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       const { isArchived } = req.body;
@@ -415,7 +414,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Generate outreach message for a report
-  app.post("/api/reports/:id/outreach", requireAuth, async (req, res) => {
+  app.post("/api/reports/:id/outreach", async (req, res) => {
     try {
       const reportId = parseInt(req.params.id);
       const strategy = req.body.strategy || "buy-side";
@@ -430,7 +429,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Get outreach messages for a report
-  app.get("/api/reports/:id/outreach", requireAuth, async (req, res) => {
+  app.get("/api/reports/:id/outreach", async (req, res) => {
     try {
       const reportId = parseInt(req.params.id);
       const outreach = await storage.getOutreachByReportId(reportId);
@@ -442,7 +441,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Update/edit an outreach message
-  app.put("/api/outreach/:id", requireAuth, async (req, res) => {
+  app.put("/api/outreach/:id", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       const { editedMessage } = req.body;
@@ -461,7 +460,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Mark outreach as sent
-  app.post("/api/outreach/:id/sent", requireAuth, async (req, res) => {
+  app.post("/api/outreach/:id/sent", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       const updated = await storage.updateOutreach(id, {
@@ -475,7 +474,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Record outreach response
-  app.post("/api/outreach/:id/response", requireAuth, async (req, res) => {
+  app.post("/api/outreach/:id/response", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       const updated = await storage.updateOutreach(id, {
@@ -489,7 +488,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Bulk approve companies
-  app.post("/api/discovery-queue/bulk-approve", requireAuth, async (req, res) => {
+  app.post("/api/discovery-queue/bulk-approve", async (req, res) => {
     try {
       const { ids } = req.body;
       if (!Array.isArray(ids) || ids.length === 0) {
@@ -523,7 +522,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Bulk reject companies
-  app.post("/api/discovery-queue/bulk-reject", requireAuth, async (req, res) => {
+  app.post("/api/discovery-queue/bulk-reject", async (req, res) => {
     try {
       const { ids } = req.body;
       if (!Array.isArray(ids) || ids.length === 0) {
@@ -545,7 +544,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Direct company research (skip discovery, research known companies)
-  app.post("/api/research/direct", requireAuth, async (req, res) => {
+  app.post("/api/research/direct", async (req, res) => {
     try {
       const { companies, strategy } = req.body;
       if (!Array.isArray(companies) || companies.length === 0) {
@@ -584,7 +583,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Clear all search data (keeps configs)
-  app.delete("/api/data/clear-all", requireAuth, async (req, res) => {
+  app.delete("/api/data/clear-all", async (req, res) => {
     try {
       if (req.body?.confirm !== "DELETE_ALL") {
         return res.status(400).json({ message: 'Must send { confirm: "DELETE_ALL" } to proceed' });
@@ -603,7 +602,7 @@ export function registerRoutes(app: Express): Server {
   // ══════════════════════════════════════════════════════════
 
   // Get latest weekly intelligence scan with hot sectors
-  app.get("/api/weekly-intelligence/latest", requireAuth, async (req, res) => {
+  app.get("/api/weekly-intelligence/latest", async (req, res) => {
     try {
       // Get most recent weekly trend
       const [latestTrend] = await db
@@ -662,7 +661,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Get newsletter detail with contacts
-  app.get("/api/newsletters/:id", requireAuth, async (req, res) => {
+  app.get("/api/newsletters/:id", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
 
@@ -717,7 +716,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Mark newsletter as sent
-  app.post("/api/newsletters/:id/mark-sent", requireAuth, async (req, res) => {
+  app.post("/api/newsletters/:id/mark-sent", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       await db
@@ -732,7 +731,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Archive of past weekly scans
-  app.get("/api/weekly-intelligence/archive", requireAuth, async (req, res) => {
+  app.get("/api/weekly-intelligence/archive", async (req, res) => {
     try {
       const trends = await db
         .select()
@@ -747,7 +746,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Clear weekly intelligence data (for re-runs)
-  app.delete("/api/weekly-intelligence/clear", requireAuth, async (req, res) => {
+  app.delete("/api/weekly-intelligence/clear", async (req, res) => {
     try {
       if (req.body?.confirm !== "DELETE_ALL") {
         return res.status(400).json({ message: 'Must send { confirm: "DELETE_ALL" } to proceed' });
@@ -767,7 +766,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Trigger weekly intelligence scan manually
-  app.post("/api/weekly-intelligence/run", requireAuth, async (req, res) => {
+  app.post("/api/weekly-intelligence/run", async (req, res) => {
     try {
       console.log("[API] Starting weekly intelligence scan...");
       weeklyIntelligenceEngine.runWeeklyScan()
@@ -785,7 +784,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   // Health check - validates DB connectivity
-  app.get("/api/health", requireAuth, async (req, res) => {
+  app.get("/api/health", async (req, res) => {
     // Check DB connectivity
     let database = "connected";
     try {
